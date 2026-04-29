@@ -1,7 +1,8 @@
-global handle_nop
+section .text
+    global handle_nop
 
-extern write_output, write_char
-extern str_nop
+    extern write_output, write_char
+    extern str_nop
 
 handle_nop:
     push rbp

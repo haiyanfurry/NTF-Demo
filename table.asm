@@ -2,6 +2,7 @@ global find_instruction_handler
 global find_operand_name
 global str_nop, str_mov, str_add, str_sub, str_mul
 global str_inc, str_dec, str_xor, str_jmp, str_push, str_pop
+global str_print
 
 global str_reg_ax, str_reg_bx, str_reg_cx, str_reg_dx
 global str_imm_0, str_imm_1, str_imm_2, str_imm_3
@@ -22,6 +23,7 @@ str_xor:     db "xor", 0
 str_jmp:     db "jmp", 0
 str_push:    db "push", 0
 str_pop:     db "pop", 0
+str_print:   db "print", 0
 
 ; 操作数名称字符串
 str_reg_ax:  db "ax", 0
@@ -53,6 +55,7 @@ str_00x00027: db "00x00027", 0
 extern handle_nop, handle_mov, handle_add, handle_sub
 extern handle_mul, handle_inc, handle_dec, handle_xor
 extern handle_jmp, handle_push, handle_pop
+extern handle_print
 
 section .data
 ; 指令查找表
@@ -79,7 +82,9 @@ INST_TAB:
     dq handle_push
     db "10100", 0, 0, 0
     dq handle_pop
-INST_COUNT equ 11
+    db "10101", 0, 0, 0
+    dq handle_print
+INST_COUNT equ 12
 INST_ENTRY_SIZE equ 16
 
 ; 操作数查找表

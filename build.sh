@@ -1,10 +1,11 @@
 #!/bin/bash
 # ============================================
-# build.sh - Linux 多模块汇编编译器构建脚本
+# build.sh - Linux 构建脚本
+# 输出: bin/compiler (Linux ELF64)
 # ============================================
 
 echo "=========================================="
-echo "Building .01 to ASM Compiler (x86_64)"
+echo "Building .01 to ASM Compiler (Linux x86_64)"
 echo "=========================================="
 
 # 检查 NASM 是否安装
@@ -15,7 +16,10 @@ if ! command -v nasm &> /dev/null; then
     exit 1
 fi
 
-echo "[1/3] Assembling modules..."
+# 确保 bin 目录存在
+mkdir -p bin
+
+echo "[1/3] Assembling core modules..."
 
 # 编译核心模块
 nasm -f elf64 main.asm   -o main.o   || exit 1
@@ -35,22 +39,37 @@ nasm -f elf64 xor.asm   -o xor.o   || exit 1
 nasm -f elf64 jmp.asm   -o jmp.o   || exit 1
 nasm -f elf64 push.asm  -o push.o  || exit 1
 nasm -f elf64 pop.asm   -o pop.o   || exit 1
+nasm -f elf64 print.asm -o print.o || exit 1
 
 echo "[3/3] Linking..."
 
-# 链接所有目标文件
+# 链接所有目标文件 → bin/compiler
 ld -m elf_x86_64 \
     main.o parse.o table.o \
     nop.o mov.o add.o sub.o mul.o \
     inc.o dec.o xor.o jmp.o push.o pop.o \
-    -o compiler
+    print.o \
+    -o bin/compiler
 
 if [ $? -eq 0 ]; then
+    # 同时复制到根目录方便使用
+    cp bin/compiler compiler
+    chmod +x bin/compiler compiler
     echo ""
+    echo "=========================================="
     echo "Build successful!"
-    echo "Usage: ./compiler <input.01>"
-    echo "Output: output.asm"
-    chmod +x compiler
+    echo "=========================================="
+    echo "Binary: bin/compiler"
+    echo ""
+    echo "Quick usage:"
+    echo "  cd bin"
+    echo "  echo 00000 | ./compiler"
+    echo "  cat output.asm"
+    echo ""
+    echo "Or from project root:"
+    echo "  echo 00000 | ./compiler"
+    echo "  cat output.asm"
+    ls -la bin/compiler
 else
     echo "Linking failed!"
     exit 1

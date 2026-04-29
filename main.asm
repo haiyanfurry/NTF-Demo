@@ -1,3 +1,11 @@
+; ============================================
+; main.asm - 主入口模块 (跨平台版)
+; 支持 Windows (nasm -f win64 -DTARGET_WIN64)
+; 支持 Linux   (nasm -f elf64)
+; ============================================
+
+%include "config.inc"
+
 global _start
 global in_fd
 global out_fd
@@ -7,9 +15,8 @@ global flush_output
 
 section .data
 in_fd   dq 0
-out_fd  dq 1
+out_fd  dq 0
 
-test_nop db '/home/haiyan/01/test_multiple.01',0
 file_output db './output.asm',0
 
 section .bss
@@ -23,141 +30,209 @@ extern handle_nop
 extern handle_mov
 
 _start:
+%ifdef TARGET_WIN64
+    ; ========== Windows 入口 ==========
+    ; 打开标准输入 (stdin)
+    get_stdin
+    load_addr rbx, in_fd
+    mov [rbx], rax
+
+    ; 创建输出文件 output.asm
+    load_addr rdi, file_output
+    mov rsi, 0x401         ; O_CREAT | O_WRONLY | O_TRUNC → 映射到 GENERIC_WRITE | CREATE_ALWAYS
+    xor rdx, rdx
+    sys_open
+    test rax, rax
+    js .error_open
+    load_addr rbx, out_fd
+    mov [rbx], rax
+
+    jmp .init_buffer
+%else
+    ; ========== Linux 入口 ==========
     ; 检查命令行参数
-    cmp qword [rsp + 8], 2
+    ; [rsp] = argc, [rsp+8] = argv[0], [rsp+16] = argv[1]
+    cmp qword [rsp], 2
     jne .use_stdin
-    
-    ; 打开输入文件
-    mov rax, 2
-    mov rdi, [rsp + 24]  ; argv[1]
-    mov rsi, 0
-    mov rdx, 0
-    syscall
+
+    ; 打开输入文件 (argv[1])
+    mov rdi, [rsp + 16]  ; argv[1]
+    xor rsi, rsi          ; O_RDONLY
+    xor rdx, rdx
+    sys_open
     test rax, rax
     js .error_open
-    mov [in_fd], rax
-    
-    ; 打开输出文件
-    mov rax, 2
-    mov rdi, file_output
-    mov rsi, 0x401  ; O_CREAT | O_WRONLY | O_TRUNC
+    load_addr rbx, in_fd
+    mov [rbx], rax
+
+    ; 打开输出文件 output.asm
+    load_addr rdi, file_output
+    mov rsi, 0x401         ; O_CREAT | O_WRONLY | O_TRUNC
     mov rdx, 0644o
-    syscall
+    sys_open
     test rax, rax
     js .error_open
-    mov [out_fd], rax
+    load_addr rbx, out_fd
+    mov [rbx], rax
     jmp .init_buffer
 
 .use_stdin:
-    ; 使用标准输入作为输入文件
-    mov qword [in_fd], 0
-    
-    ; 使用标准输出作为输出文件
-    mov qword [out_fd], 1
+    ; 使用标准输入/输出
+    load_addr rbx, in_fd
+    mov qword [rbx], 0
+    load_addr rbx, out_fd
+    mov qword [rbx], 1
+%endif
 
 .init_buffer:
-    
-    ; 初始化输出缓冲区位置
-    mov qword [out_pos], 0
-    
+    load_addr rbx, out_pos
+    mov qword [rbx], 0
+
     ; 循环处理输入，直到遇到EOF
 .loop:
     call parse_line
     test rax, rax
     jz .done
-    
-    ; 查找并执行指令处理函数
+
     call find_instruction_handler
+
     jmp .loop
-    
+
 .done:
     call flush_output
-    
+
     ; 关闭文件
-    mov rax, 3
-    mov rdi, [in_fd]
-    syscall
-    
-    mov rax, 3
-    mov rdi, [out_fd]
-    syscall
-    
-    ; 退出
-    mov rax, 60
+%ifdef TARGET_WIN64
+    ; Windows: 关闭文件
+    load_addr rbx, in_fd
+    mov rdi, [rbx]
+    sys_close
+
+    load_addr rbx, out_fd
+    mov rdi, [rbx]
+    sys_close
+
     xor rdi, rdi
-    syscall
+    sys_exit
+%else
+    ; Linux: 关闭文件描述符
+    load_addr rbx, in_fd
+    mov rdi, [rbx]
+    sys_close
+
+    load_addr rbx, out_fd
+    mov rdi, [rbx]
+    sys_close
+
+    xor rdi, rdi
+    sys_exit
+%endif
 
 .error_open:
+%ifndef TARGET_WIN64
+    ; Linux: 输出错误信息到 stderr
+    load_addr rsi, error_msg
+    load_addr rdx, error_len
+    ; need actual rdx = error_len, not address
+    ; Actually load_addr gives address, but we need value
+    ; Let's do it differently
     mov rax, 1
-    mov rdi, 2
-    mov rsi, error_msg
-    mov rdx, error_len
-    syscall
-    mov rax, 60
+    mov rdi, 2        ; stderr
+    load_addr rsi, error_msg
+    load_addr rbx, error_len
+    mov rdx, [rbx]
+    sys_write
     mov rdi, 1
-    syscall
-
-.usage:
-    mov rax, 1
-    mov rdi, 2
-    mov rsi, usage_msg
-    mov rdx, usage_len
-    syscall
-    mov rax, 60
+    sys_exit
+%else
+    ; Windows: 简单退出
     mov rdi, 1
-    syscall
+    sys_exit
+%endif
 
-section .data
-usage_msg db 'Usage: ./compiler <input.01>',10,0
-usage_len equ $ - usage_msg
-error_msg db 'Error: Cannot open input file',10,0
-error_len equ $ - error_msg
-
-section .text
+; ============================================
+; write_char: 写入一个字符到输出缓冲区
+; 输入: al = 字符
+; ============================================
 write_char:
     push rbp
     mov rbp, rsp
     sub rsp, 48
-    mov rcx, [out_pos]
-    mov [out_buf + rcx], al
-    inc rcx
-    mov [out_pos], rcx
-    cmp rcx, 4095
+
+    load_addr rbx, out_pos
+    load_addr rcx, out_buf
+
+    mov rdx, [rbx]         ; rdx = out_pos
+    mov [rcx + rdx], al    ; out_buf[out_pos] = al
+    inc rdx
+    mov [rbx], rdx         ; out_pos++
+
+    cmp rdx, 4095
     jl .done
     call flush_output
+
 .done:
     leave
     ret
 
+; ============================================
+; write_output: 写入字符串到输出缓冲区
+; 输入: rsi = 字符串地址 (以0结尾)
+; ============================================
 write_output:
     push rbp
     mov rbp, rsp
     sub rsp, 48
     push rsi
+
 .write_loop:
     lodsb
     test al, al
     jz .done
     call write_char
     jmp .write_loop
+
 .done:
     pop rsi
     leave
     ret
 
+; ============================================
+; flush_output: 将缓冲区内容写入输出文件
+; ============================================
 flush_output:
     push rbp
     mov rbp, rsp
     sub rsp, 48
-    mov rax, [out_pos]
+
+    load_addr rbx, out_pos
+    mov rax, [rbx]
     test rax, rax
     jz .done
-    mov rax, 1
-    mov rdi, [out_fd]
-    mov rsi, out_buf
-    mov rdx, [out_pos]
-    syscall
-    mov qword [out_pos], 0
+
+    ; sys_write(rdi=out_fd, rsi=out_buf, rdx=out_pos)
+    load_addr rbx, out_fd
+    mov rdi, [rbx]
+    load_addr rsi, out_buf
+    load_addr rbx, out_pos
+    mov rdx, [rbx]
+    sys_write
+
+    load_addr rbx, out_pos
+    mov qword [rbx], 0
+
 .done:
     leave
     ret
+
+; ============================================
+; 静态数据
+; ============================================
+%ifndef TARGET_WIN64
+section .data
+usage_msg db 'Usage: ./compiler <input.01>',10,0
+usage_len dq $ - usage_msg
+error_msg db 'Error: Cannot open input file',10,0
+error_len dq $ - error_msg
+%endif
+

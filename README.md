@@ -326,5 +326,14 @@ output.asm         ← 生成的 NASM 汇编源码
 
 ---
 
+---
+# 注：
+```text
+本作者说过！
+写出hello world我穿女装
+用mp4视频把完整过程给我
+我直接把女装照片发README里面
+```
+
 **创作者**：haiyanfurry  
 **邮箱**：2752842448@qq.com

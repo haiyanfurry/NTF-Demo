@@ -322,7 +322,7 @@ output.asm         ← 生成的 NASM 汇编源码
 
 ## 许可证
 
-本项目基于 [MIT 许可证](LICENSE) 开源。
+本项目基于 [Unlicense协议] 开源。
 
 ---
 

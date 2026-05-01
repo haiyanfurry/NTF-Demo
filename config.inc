@@ -12,11 +12,13 @@
 ;     rdx = 参数3 (长度, 模式)
 ;
 ; Windows x64 堆栈对齐规则:
-;   call 指令前 RSP 必须 16 字节对齐
-;   因此宏内 sub rsp, 56:
-;     sub rsp, 56 → RSP = 16K-56 = NOT aligned (56 mod 16 = 8)
-;     call Func  → RSP = 16K-64 = aligned ✅
-;   分配的 56 字节: 32 shadow + 24 栈参数空间
+;   调用者函数帧内 RSP ≡ 0 mod 16 (push rbp + sub rsp, 16K)
+;   call 指令前 RSP 必须 16 字节对齐 (RSP ≡ 0 mod 16)
+;   call 推送 8 字节返回地址 → 被调用者内 RSP ≡ 8 mod 16
+;   宏内 sub rsp 的值必须 ≡ 0 mod 16:
+;     sub rsp, 16K  → RSP = 0-16K = aligned (0 mod 16) ✅
+;     call Func     → pushes 8 → RSP = 8 mod 16 在被调用者内 ✅
+;   分配空间: 32 字节 shadow + 额外栈参数空间, 向上取整到 16 的倍数
 ; ============================================
 
 %ifdef TARGET_WIN64
@@ -54,7 +56,7 @@ extern ExitProcess
 ;   输入: rdi = 文件名, rsi = 标志 (兼容 Linux: 0=O_RDONLY, 0x401=O_CREAT|O_WRONLY|O_TRUNC)
 ;   输出: rax = 句柄 (INVALID_HANDLE_VALUE = -1 表示失败)
 %macro sys_open 0
-    sub rsp, 56
+    sub rsp, 64
     mov rcx, rdi           ; lpFileName
     ; 根据 Linux 风格标志映射到 Windows
     test rsi, 0x401        ; 检查是否有 O_CREAT | O_WRONLY
@@ -72,7 +74,7 @@ extern ExitProcess
     mov dword [rsp+40], 0  ; dwFlagsAndAttributes
     mov dword [rsp+48], 0  ; hTemplateFile
     call CreateFileA
-    add rsp, 56
+    add rsp, 64
 %endmacro
 
 ; sys_read: 读取文件
@@ -80,15 +82,15 @@ extern ExitProcess
 ;   输出: rax = 实际读取字节数
 %macro sys_read 0
     mov r10, rdx           ; 保存 count
-    sub rsp, 56
+    sub rsp, 48
     mov rcx, rdi           ; hFile
     mov rdx, rsi           ; lpBuffer
     mov r8, r10            ; nNumberOfBytesToRead
-    lea r9, [rsp+48]       ; lpNumberOfBytesRead (位于分配的56字节内)
+    lea r9, [rsp+40]       ; lpNumberOfBytesRead (位于分配的48字节内)
     mov qword [rsp+32], 0  ; lpOverlapped (NULL)
     call ReadFile
-    mov eax, [rsp+48]      ; return bytes read
-    add rsp, 56
+    mov eax, [rsp+40]      ; return bytes read
+    add rsp, 48
 %endmacro
 
 ; sys_write: 写入文件
@@ -96,49 +98,51 @@ extern ExitProcess
 ;   输出: rax = 实际写入字节数
 %macro sys_write 0
     mov r10, rdx           ; 保存 count
-    sub rsp, 56
+    sub rsp, 48
     mov rcx, rdi           ; hFile
     mov rdx, rsi           ; lpBuffer
     mov r8, r10            ; nNumberOfBytesToWrite
-    lea r9, [rsp+48]       ; lpNumberOfBytesWritten
+    lea r9, [rsp+40]       ; lpNumberOfBytesWritten
     mov qword [rsp+32], 0  ; lpOverlapped (NULL)
     call WriteFile
-    mov eax, [rsp+48]      ; return bytes written
-    add rsp, 56
+    mov eax, [rsp+40]      ; return bytes written
+    add rsp, 48
 %endmacro
 
 ; sys_close: 关闭句柄
 ;   输入: rdi = 句柄
 %macro sys_close 0
-    sub rsp, 56
+    sub rsp, 32
     mov rcx, rdi
     call CloseHandle
-    add rsp, 56
+    add rsp, 32
 %endmacro
 
 ; sys_exit: 退出进程
 ;   输入: rdi = 退出码
 %macro sys_exit 0
-    sub rsp, 56
+    sub rsp, 32
     mov rcx, rdi
     call ExitProcess
-    add rsp, 56
+    ; ExitProcess 不返回, 无需 add rsp
+    ; 但保留 add 以保持完全释放 (实际不会执行到)
+    add rsp, 32
 %endmacro
 
 ; 获取标准输入句柄 -> rax
 %macro get_stdin 0
-    sub rsp, 56
+    sub rsp, 32
     mov rcx, STD_INPUT_HANDLE
     call GetStdHandle
-    add rsp, 56
+    add rsp, 32
 %endmacro
 
 ; 获取标准输出句柄 -> rax
 %macro get_stdout 0
-    sub rsp, 56
+    sub rsp, 32
     mov rcx, STD_OUTPUT_HANDLE
     call GetStdHandle
-    add rsp, 56
+    add rsp, 32
 %endmacro
 
 ; RIP-相对寻址辅助: 加载变量地址

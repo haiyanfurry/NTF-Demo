@@ -1,11 +1,18 @@
 ; ============================================
-; main.asm - 主入口模块 (跨平台版)
-; 支持 Windows (nasm -f win64 -DTARGET_WIN64)
-; 支持 Linux   (nasm -f elf64)
+; main.asm - NTF-Demo v2.0 主入口 (跨平台版)
+; ============================================
+; NTF-Demo: 二进制到汇编的通用解码器
+;
+; 使用:
+;   compiler -c cpu.hdr program.bin
+;   compiler -c cpu.hdr -x program.hex
 ; ============================================
 
 %include "config.inc"
 
+; ============================================
+; 导出符号
+; ============================================
 global _start
 global in_fd
 global out_fd
@@ -13,142 +20,483 @@ global write_char
 global write_output
 global flush_output
 
-section .data
-in_fd   dq 0
-out_fd  dq 0
+; ============================================
+; 外部引用
+; ============================================
+extern parse_cpu_header
+extern open_input
+extern close_input
+extern input_format
+extern INPUT_FMT_BIN
+extern INPUT_FMT_HEX
+extern INPUT_FMT_TEXT
+extern INPUT_FMT_AUTO
 
-file_output db './output.asm',0
+extern decode_next_instruction
+extern ir_entry_count
+extern clear_ir_buffer
+
+extern generate_all
+
+; ============================================
+; 常量
+; ============================================
+OUT_BUF_SIZE    equ 4096
+
+; ============================================
+; DATA
+; ============================================
+section .data
+in_fd           dq 0
+out_fd          dq 0
+
+input_path      dq 0           ; 输入文件路径指针
+cpu_path        dq 0           ; CPU 头文件路径指针
+ir_path         dq 0           ; IR 输出路径指针 (可选)
+output_path     dq 0           ; 输出文件路径指针
+input_fmt       dq INPUT_FMT_AUTO  ; 输入格式
+
+; 默认值
+default_output  db './output.asm', 0
+default_cpu     db './cpu.hdr', 0
+
+; 常量字符串
+section .data
+help_msg    db "NTF-Demo v2.0 - Binary to Assembly Decoder", 10
+            db "Usage: compiler [options] <input>", 10
+            db "Options:", 10
+            db "  -c, --cpu <file>   CPU definition header", 10
+            db "  -b, --binary       Input is raw binary (default)", 10
+            db "  -x, --hex          Input is hex text", 10
+            db "  -t, --text         Input is legacy .01 text", 10
+            db "  -i, --ir <file>    Output IR debug file", 10
+            db "  -o, --output <file> Output file (default: output.asm)", 10
+            db "  -h, --help         Show this help", 10
+            db 0
+help_msg_end:
+
+err_no_cpu      db "Error: No CPU header specified.", 10, 0
+err_no_input    db "Error: No input file specified.", 10, 0
+err_open_cpu    db "Error: Cannot open CPU header file.", 10, 0
+err_open_input  db "Error: Cannot open input file.", 10, 0
+err_open_output db "Error: Cannot open output file.", 10, 0
+err_unknown_opt db "Error: Unknown option: ", 0
 
 section .bss
-out_buf resb 4096
-out_pos resq 1
+out_buf         resb OUT_BUF_SIZE
+out_pos         resq 1
+
+; IR 文件句柄
+ir_fd           resq 1
 
 section .text
-extern parse_line
-extern find_instruction_handler
-extern handle_nop
-extern handle_mov
 
+; ============================================
+; _start: 入口点 (Linux x86_64)
+; ============================================
 _start:
-%ifdef TARGET_WIN64
-    ; ========== Windows 入口 ==========
-    ; 打开标准输入 (stdin)
-    get_stdin
-    load_addr rbx, in_fd
-    mov [rbx], rax
+    push rbp
+    mov rbp, rsp
+    sub rsp, 64
 
-    ; 创建输出文件 output.asm
-    load_addr rdi, file_output
-    mov rsi, 0x401         ; O_CREAT | O_WRONLY | O_TRUNC → 映射到 GENERIC_WRITE | CREATE_ALWAYS
-    xor rdx, rdx
-    sys_open
-    test rax, rax
-    js .error_open
-    load_addr rbx, out_fd
-    mov [rbx], rax
-
-    jmp .init_buffer
-%else
-    ; ========== Linux 入口 ==========
-    ; 检查命令行参数
-    ; [rsp] = argc, [rsp+8] = argv[0], [rsp+16] = argv[1]
-    cmp qword [rsp], 2
-    jne .use_stdin
-
-    ; 打开输入文件 (argv[1])
-    mov rdi, [rsp + 16]  ; argv[1]
-    xor rsi, rsi          ; O_RDONLY
-    xor rdx, rdx
-    sys_open
-    test rax, rax
-    js .error_open
-    load_addr rbx, in_fd
-    mov [rbx], rax
-
-    ; 打开输出文件 output.asm
-    load_addr rdi, file_output
-    mov rsi, 0x401         ; O_CREAT | O_WRONLY | O_TRUNC
-    mov rdx, 0644o
-    sys_open
-    test rax, rax
-    js .error_open
-    load_addr rbx, out_fd
-    mov [rbx], rax
-    jmp .init_buffer
-
-.use_stdin:
-    ; 使用标准输入/输出
-    load_addr rbx, in_fd
-    mov qword [rbx], 0
-    load_addr rbx, out_fd
-    mov qword [rbx], 1
-%endif
-
-.init_buffer:
+    ; 初始化
     load_addr rbx, out_pos
     mov qword [rbx], 0
 
-    ; 循环处理输入，直到遇到EOF
-.loop:
-    call parse_line
+    ; 设置默认输出路径
+    load_addr rax, default_output
+    load_addr rbx, output_path
+    mov [rbx], rax
+
+    ; 设置 IR 文件句柄为 0 (未启用)
+    load_addr rbx, ir_fd
+    mov qword [rbx], 0
+
+    ; ---- 解析命令行参数 ----
+    ; 在 Linux _start 入口:
+    ;   [rsp+8]   = argc  (但我们已经 push rbp, 所以是 [rbp+16])
+    ;   [rbp+24]  = argv[0]
+    ;   [rbp+32]  = argv[1]
+    ;   ...
+    mov rax, [rbp + 16]       ; argc
+    mov r12, rax
+    lea r13, [rbp + 24]       ; argv 数组指针
+
+    cmp r12, 1
+    jle .show_help_and_exit
+
+    xor r14, r14              ; argv 索引
+    inc r14                   ; 跳过 argv[0] (程序名)
+
+.parse_args_loop:
+    cmp r14, r12
+    jge .parse_done
+
+    mov rdi, [r13 + r14 * 8]  ; argv[r14]
+    inc r14
+
+    ; 检查是否是选项 (以 - 开头)
+    mov al, [rdi]
+    cmp al, '-'
+    jne .is_positional
+
+    ; 处理选项
+    mov al, [rdi + 1]
+    cmp al, 'c'
+    je .opt_c
+    cmp al, 'b'
+    je .opt_b
+    cmp al, 'x'
+    je .opt_x
+    cmp al, 't'
+    je .opt_t
+    cmp al, 'i'
+    je .opt_i
+    cmp al, 'o'
+    je .opt_o
+    cmp al, 'h'
+    je .opt_h
+    cmp al, '-'
+    je .opt_long
+    jmp .unknown_opt
+
+.opt_c:
+    ; -c <cpu.hdr>
+    cmp r14, r12
+    jge .missing_arg
+    mov rdi, [r13 + r14 * 8]
+    inc r14
+    load_addr rbx, cpu_path
+    mov [rbx], rdi
+    jmp .parse_args_loop
+
+.opt_b:
+    ; -b 二进制格式
+    load_addr rbx, input_fmt
+    mov qword [rbx], INPUT_FMT_BIN
+    jmp .parse_args_loop
+
+.opt_x:
+    ; -x 十六进制格式
+    load_addr rbx, input_fmt
+    mov qword [rbx], INPUT_FMT_HEX
+    jmp .parse_args_loop
+
+.opt_t:
+    ; -t 文本格式
+    load_addr rbx, input_fmt
+    mov qword [rbx], INPUT_FMT_TEXT
+    jmp .parse_args_loop
+
+.opt_i:
+    ; -i <ir_file>
+    cmp r14, r12
+    jge .missing_arg
+    mov rdi, [r13 + r14 * 8]
+    inc r14
+    load_addr rbx, ir_path
+    mov [rbx], rdi
+    jmp .parse_args_loop
+
+.opt_o:
+    ; -o <output.asm>
+    cmp r14, r12
+    jge .missing_arg
+    mov rdi, [r13 + r14 * 8]
+    inc r14
+    load_addr rbx, output_path
+    mov [rbx], rdi
+    jmp .parse_args_loop
+
+.opt_h:
+    ; -h 帮助
+    call show_help
+    mov rdi, 0
+    sys_exit
+
+.opt_long:
+    ; --long options
+    mov al, [rdi + 2]
+    cmp al, 'c'
+    jne .check_help
+    cmp byte [rdi + 3], 'p'
+    jne .unknown_opt
+    cmp byte [rdi + 4], 'u'
+    jne .unknown_opt
+    ; --cpu
+    cmp r14, r12
+    jge .missing_arg
+    mov rdi, [r13 + r14 * 8]
+    inc r14
+    load_addr rbx, cpu_path
+    mov [rbx], rdi
+    jmp .parse_args_loop
+
+.check_help:
+    cmp al, 'h'
+    jne .unknown_opt
+    cmp byte [rdi + 3], 'e'
+    jne .unknown_opt
+    cmp byte [rdi + 4], 'l'
+    jne .unknown_opt
+    cmp byte [rdi + 5], 'p'
+    jne .unknown_opt
+    call show_help
+    mov rdi, 0
+    sys_exit
+
+.is_positional:
+    ; 位置参数 = 输入文件
+    load_addr rbx, input_path
+    mov [rbx], rdi
+    jmp .parse_args_loop
+
+.unknown_opt:
+    ; 未知选项
+    load_addr rsi, err_unknown_opt
+    call write_stderr
+    mov rsi, rdi
+    call write_stderr
+    mov al, 10
+    load_addr rsi, stderr_char
+    mov [rsi], al
+    mov rsi, stderr_char
+    call write_stderr
+    jmp .show_help_and_exit
+
+.missing_arg:
+    load_addr rsi, err_no_input
+    call write_stderr
+
+.show_help_and_exit:
+    call show_help
+    mov rdi, 1
+    sys_exit
+
+.parse_done:
+    ; ---- 验证必要参数 ----
+    load_addr rbx, cpu_path
+    mov rax, [rbx]
     test rax, rax
-    jz .done
+    jnz .has_cpu
 
-    call find_instruction_handler
+    ; 尝试默认 cpu.hdr
+    load_addr rax, default_cpu
+    mov [rbx], rax
 
-    jmp .loop
+.has_cpu:
+    load_addr rbx, input_path
+    mov rax, [rbx]
+    test rax, rax
+    jnz .has_input
 
-.done:
+    load_addr rsi, err_no_input
+    call write_stderr
+    mov rdi, 1
+    sys_exit
+
+.has_input:
+    ; ============================================
+    ; Step 1: 解析 CPU 头文件
+    ; ============================================
+    load_addr rbx, cpu_path
+    mov rdi, [rbx]
+    call parse_cpu_header
+    test rax, rax
+    jz .cpu_ok
+
+    load_addr rsi, err_open_cpu
+    call write_stderr
+    mov rdi, 1
+    sys_exit
+
+.cpu_ok:
+    ; ============================================
+    ; Step 2: 打开输出文件
+    ; ============================================
+%ifdef TARGET_WIN64
+    load_addr rbx, output_path
+    mov rdi, [rbx]
+    mov rsi, 0x401
+    xor rdx, rdx
+    sys_open
+    test rax, rax
+    js .error_output
+    load_addr rbx, out_fd
+    mov [rbx], rax
+%else
+    load_addr rbx, output_path
+    mov rdi, [rbx]
+    mov rsi, 0x241         ; O_WRONLY | O_CREAT | O_TRUNC
+    mov rdx, 0644o
+    sys_open
+    test rax, rax
+    js .error_output
+    load_addr rbx, out_fd
+    mov [rbx], rax
+%endif
+
+    ; ============================================
+    ; Step 3: 打开输入文件
+    ; ============================================
+    load_addr rbx, input_path
+    mov rdi, [rbx]
+    load_addr rsi, input_fmt
+    mov rsi, [rsi]
+    call open_input
+    test rax, rax
+    jz .input_ok
+
+    load_addr rsi, err_open_input
+    call write_stderr
+    jmp .error_exit
+
+.input_ok:
+    ; ============================================
+    ; Step 4: 打开 IR 输出文件 (可选)
+    ; ============================================
+    load_addr rbx, ir_path
+    mov rax, [rbx]
+    test rax, rax
+    jz .no_ir
+
+%ifdef TARGET_WIN64
+    mov rdi, rax
+    mov rsi, 0x401
+    xor rdx, rdx
+    sys_open
+    test rax, rax
+    js .no_ir
+    load_addr rbx, ir_fd
+    mov [rbx], rax
+%else
+    mov rdi, rax
+    mov rsi, 0x241
+    mov rdx, 0644o
+    sys_open
+    test rax, rax
+    js .no_ir
+    load_addr rbx, ir_fd
+    mov [rbx], rax
+%endif
+
+.no_ir:
+    ; ============================================
+    ; Step 5: 主解码循环
+    ; ============================================
+.main_loop:
+    call decode_next_instruction
+    test rax, rax
+    js .main_done
+    jmp .main_loop
+
+.main_done:
+    ; ============================================
+    ; Step 6: 生成汇编输出
+    ; ============================================
+    call generate_all
+
+    ; ============================================
+    ; Step 7: 刷新输出缓冲区
+    ; ============================================
     call flush_output
 
-    ; 关闭文件
-%ifdef TARGET_WIN64
-    ; Windows: 关闭文件
-    load_addr rbx, in_fd
-    mov rdi, [rbx]
-    sys_close
+    ; ============================================
+    ; Step 8: 输出 IR 调试文件
+    ; ============================================
+    load_addr rbx, ir_fd
+    mov rax, [rbx]
+    test rax, rax
+    jz .no_ir_output
+    call write_ir_file
+
+.no_ir_output:
+    ; ============================================
+    ; 清理退出
+    ; ============================================
+    call close_input
 
     load_addr rbx, out_fd
     mov rdi, [rbx]
     sys_close
 
-    xor rdi, rdi
-    sys_exit
-%else
-    ; Linux: 关闭文件描述符
-    load_addr rbx, in_fd
-    mov rdi, [rbx]
+    load_addr rbx, ir_fd
+    mov rax, [rbx]
+    test rax, rax
+    jz .exit_ok
+    mov rdi, rax
     sys_close
 
-    load_addr rbx, out_fd
-    mov rdi, [rbx]
-    sys_close
-
+.exit_ok:
     xor rdi, rdi
     sys_exit
-%endif
 
-.error_open:
-%ifndef TARGET_WIN64
-    ; Linux: 输出错误信息到 stderr
-    load_addr rsi, error_msg
-    load_addr rdx, error_len
-    ; need actual rdx = error_len, not address
-    ; Actually load_addr gives address, but we need value
-    ; Let's do it differently
-    mov rax, 1
-    mov rdi, 2        ; stderr
-    load_addr rsi, error_msg
-    load_addr rbx, error_len
-    mov rdx, [rbx]
+.error_output:
+    load_addr rsi, err_open_output
+    call write_stderr
+
+.error_exit:
+    mov rdi, 1
+    sys_exit
+
+; ============================================
+; show_help: 显示帮助信息
+; ============================================
+show_help:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+
+    mov rdi, 2          ; stderr
+    load_addr rsi, help_msg
+    mov rdx, help_msg_end - help_msg
     sys_write
-    mov rdi, 1
-    sys_exit
-%else
-    ; Windows: 简单退出
-    mov rdi, 1
-    sys_exit
-%endif
+
+    leave
+    ret
+
+; ============================================
+; write_stderr: 写入字符串到 stderr
+; 输入: rsi = 字符串指针 (0结尾)
+; ============================================
+write_stderr:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+
+    push rsi
+    xor rdx, rdx
+.len_loop:
+    cmp byte [rsi + rdx], 0
+    je .have_len
+    inc rdx
+    jmp .len_loop
+.have_len:
+    mov rdi, 2          ; stderr
+    sys_write
+    pop rsi
+
+    leave
+    ret
+
+; ============================================
+; write_ir_file: 将 IR 内容写入调试文件
+; (Phase 3 完整实现)
+; ============================================
+write_ir_file:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 64
+    push r12
+    push r13
+
+    ; 占位 - Phase 3 实现
+    ; 需要遍历 ir_entry_count, 写入格式化的 IR 文本
+
+    pop r13
+    pop r12
+    leave
+    ret
 
 ; ============================================
 ; write_char: 写入一个字符到输出缓冲区
@@ -162,12 +510,12 @@ write_char:
     load_addr rbx, out_pos
     load_addr rcx, out_buf
 
-    mov rdx, [rbx]         ; rdx = out_pos
-    mov [rcx + rdx], al    ; out_buf[out_pos] = al
+    mov rdx, [rbx]
+    mov [rcx + rdx], al
     inc rdx
-    mov [rbx], rdx         ; out_pos++
+    mov [rbx], rdx
 
-    cmp rdx, 4095
+    cmp rdx, OUT_BUF_SIZE - 1
     jl .done
     call flush_output
 
@@ -177,7 +525,7 @@ write_char:
 
 ; ============================================
 ; write_output: 写入字符串到输出缓冲区
-; 输入: rsi = 字符串地址 (以0结尾)
+; 输入: rsi = 字符串地址 (0结尾)
 ; ============================================
 write_output:
     push rbp
@@ -210,7 +558,6 @@ flush_output:
     test rax, rax
     jz .done
 
-    ; sys_write(rdi=out_fd, rsi=out_buf, rdx=out_pos)
     load_addr rbx, out_fd
     mov rdi, [rbx]
     load_addr rsi, out_buf
@@ -228,11 +575,5 @@ flush_output:
 ; ============================================
 ; 静态数据
 ; ============================================
-%ifndef TARGET_WIN64
 section .data
-usage_msg db 'Usage: ./compiler <input.01>',10,0
-usage_len dq $ - usage_msg
-error_msg db 'Error: Cannot open input file',10,0
-error_len dq $ - error_msg
-%endif
-
+stderr_char     db 0, 0

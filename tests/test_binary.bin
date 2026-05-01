@@ -1,0 +1,20 @@
+NTF-Demo v2.0 Binary Test File
+Corresponding to: cpu_examples/8bit_example.hdr
+
+Instructions (hex):
+00        ; nop
+10        ; mov ax, ax
+15        ; mov bx, bx
+2A        ; add cx, imm_1
+3F        ; sub dx, imm_5
+50        ; inc ax
+64        ; dec bx
+78        ; xor cx, ax
+80 10     ; jmp 0x10
+90 00     ; push ax
+A0 01     ; pop bx
+00        ; nop
+
+Note: This is NOT a valid binary file.
+The actual binary must be created with:
+  python -c "import sys; sys.stdout.buffer.write(bytes([0x00,0x10,0x15,0x2A,0x3F,0x50,0x64,0x78,0x80,0x10,0x90,0x00,0xA0,0x01,0x00]))" > tests/test_binary.bin

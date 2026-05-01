@@ -25,23 +25,11 @@
 ;   clear_ir_buffer()
 ; ============================================
 
+default rel
+
 %include "config.inc"
-
-; ============================================
-; 常量
-; ============================================
-IR_ENTRY_SIZE   equ 56
-IR_MNEMONIC_OFF equ 0      ; 助记符指针 (8)
-IR_OP1_OFF      equ 8      ; 操作数1指针 (8)
-IR_OP2_OFF      equ 16     ; 操作数2指针 (8)
-IR_OP3_OFF      equ 24     ; 操作数3指针 (8)
-IR_OP4_OFF      equ 32     ; 操作数4指针 (8)
-IR_OPCOUNT_OFF  equ 40     ; 操作数计数 (8)
-IR_RAW_OFF      equ 48     ; 原始字节[4] (4)
-IR_SIZE_OFF     equ 52     ; 指令大小 (1)
-                            ; = 53 字节 + 3 padding = 56
-
-MAX_IR_ENTRIES  equ 256
+%include "cpu_defs.inc"
+%include "ir_defs.inc"
 
 ; ============================================
 ; 导出符号
@@ -162,9 +150,9 @@ decode_next_instruction:
     ; 从原始字节中提取字段值
     mov rax, [rbx + FIELD_BITMASK_OFF]   ; bitmask
     and rax, r12                          ; 应用掩码
-    xor rdx, rdx
-    mov dl, [rbx + FIELD_SHIFT_OFF]       ; shift
-    shr rax, dl                           ; 右移对齐
+    xor rcx, rcx
+    mov cl, [rbx + FIELD_SHIFT_OFF]       ; shift
+    shr rax, cl                           ; 右移对齐 (只能用 CL 或立即数)
 
     ; 检查是否是立即数字段
     cmp byte [rbx + FIELD_IS_IMM_OFF], 0

@@ -8,6 +8,8 @@
 ;   compiler -c cpu.hdr -x program.hex
 ; ============================================
 
+default rel
+
 %include "config.inc"
 
 ; ============================================
@@ -37,6 +39,7 @@ extern ir_entry_count
 extern clear_ir_buffer
 
 extern generate_all
+extern GetCommandLineA
 
 ; ============================================
 ; 常量
@@ -92,12 +95,12 @@ ir_fd           resq 1
 section .text
 
 ; ============================================
-; _start: 入口点 (Linux x86_64)
+; _start: 入口点 (跨平台)
 ; ============================================
 _start:
     push rbp
     mov rbp, rsp
-    sub rsp, 64
+    sub rsp, 80
 
     ; 初始化
     load_addr rbx, out_pos
@@ -112,15 +115,26 @@ _start:
     load_addr rbx, ir_fd
     mov qword [rbx], 0
 
-    ; ---- 解析命令行参数 ----
-    ; 在 Linux _start 入口:
-    ;   [rsp+8]   = argc  (但我们已经 push rbp, 所以是 [rbp+16])
-    ;   [rbp+24]  = argv[0]
-    ;   [rbp+32]  = argv[1]
-    ;   ...
+    ; ---- 获取命令行参数 ----
+%ifdef TARGET_WIN64
+    ; Windows x64: 使用 GetCommandLineA 获取命令行
+    ; 在栈上分配 argv 数组 (最大 64 个参数指针)
+    sub rsp, 64 * 8           ; 512 字节
+    mov r15, rsp              ; 保存 argv 数组基址到 r15
+    sub rsp, 32               ; shadow space for GetCommandLineA
+    call GetCommandLineA
+    add rsp, 32               ; 恢复 shadow space
+    mov rdi, rax              ; rdi = 命令行字符串
+    mov rsi, r15              ; rsi = argv 缓冲区
+    call parse_cmdline_win
+    mov r12, rax              ; r12 = argc
+    mov r13, r15              ; r13 = argv 数组指针
+%else
+    ; Linux x86_64: 从堆栈获取 argc/argv
     mov rax, [rbp + 16]       ; argc
     mov r12, rax
     lea r13, [rbp + 24]       ; argv 数组指针
+%endif
 
     cmp r12, 1
     jle .show_help_and_exit
@@ -260,7 +274,7 @@ _start:
     mov al, 10
     load_addr rsi, stderr_char
     mov [rsi], al
-    mov rsi, stderr_char
+    load_addr rsi, stderr_char
     call write_stderr
     jmp .show_help_and_exit
 
@@ -440,6 +454,23 @@ _start:
     sys_exit
 
 ; ============================================
+; get_stderr_fd: 获取标准错误输出句柄/fd
+; 输出: rax = stderr 句柄 (Windows) / fd=2 (Linux)
+; ============================================
+get_stderr_fd:
+%ifdef TARGET_WIN64
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48       ; 32 shadow + 16 对齐 (call后 rsp=16K-8, sub 48 → 16K-56, 56mod16=8 → aligned ✓)
+    mov rcx, STD_ERROR_HANDLE
+    call GetStdHandle
+    leave
+%else
+    mov rax, 2
+%endif
+    ret
+
+; ============================================
 ; show_help: 显示帮助信息
 ; ============================================
 show_help:
@@ -447,7 +478,8 @@ show_help:
     mov rbp, rsp
     sub rsp, 32
 
-    mov rdi, 2          ; stderr
+    call get_stderr_fd
+    mov rdi, rax
     load_addr rsi, help_msg
     mov rdx, help_msg_end - help_msg
     sys_write
@@ -472,7 +504,8 @@ write_stderr:
     inc rdx
     jmp .len_loop
 .have_len:
-    mov rdi, 2          ; stderr
+    call get_stderr_fd
+    mov rdi, rax
     sys_write
     pop rsi
 
@@ -571,6 +604,118 @@ flush_output:
 .done:
     leave
     ret
+
+; ============================================
+; parse_cmdline_win: 解析 Windows 命令行字符串
+; 输入: rdi = 命令行字符串 (GetCommandLineA 返回值)
+;       rsi = argv 缓冲区 (存储指针数组)
+; 输出: rax = argc (参数个数)
+; 破坏: rdi, rsi, rcx, rdx, r8, r9, r10, r11
+; ============================================
+%ifdef TARGET_WIN64
+parse_cmdline_win:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov r12, rdi           ; r12 = 命令行字符串指针
+    mov r13, rsi           ; r13 = argv 缓冲区
+    xor r14, r14           ; r14 = argc (参数计数)
+    xor r15, r15           ; r15 = 当前参数起始位置 (0 = 未开始)
+
+.skip_initial_spaces:
+    mov al, [r12]
+    test al, al
+    jz .done
+    cmp al, ' '
+    je .next_char_skip
+    cmp al, 9              ; tab
+    je .next_char_skip
+    cmp al, 13             ; CR
+    je .next_char_skip
+    cmp al, 10             ; LF
+    je .next_char_skip
+
+    ; 找到参数起始
+    mov r15, r12           ; 记录参数起始
+    cmp al, '"'
+    je .quoted_arg
+
+.unquoted_arg:
+    ; 解析不带引号的参数 (直到空格或结束)
+    inc r12
+    mov al, [r12]
+    test al, al
+    jz .end_unquoted
+    cmp al, ' '
+    je .end_unquoted
+    cmp al, 9
+    je .end_unquoted
+    cmp al, 13
+    je .end_unquoted
+    cmp al, 10
+    je .end_unquoted
+    jmp .unquoted_arg
+
+.end_unquoted:
+    ; 保存参数指针
+    mov [r13 + r14 * 8], r15
+    inc r14
+    ; 跳过当前字符 (空格分隔符)
+    cmp al, 0
+    je .done
+    inc r12
+    jmp .skip_initial_spaces
+
+.quoted_arg:
+    ; 解析带引号的参数 (从 r15 开始包含引号)
+    inc r12               ; 跳过起始引号
+.quoted_loop:
+    mov al, [r12]
+    test al, al
+    jz .end_quoted
+    cmp al, '"'
+    je .check_escaped_quote
+    inc r12
+    jmp .quoted_loop
+
+.check_escaped_quote:
+    ; 检查是否是转义引号 ""
+    cmp byte [r12 + 1], '"'
+    jne .end_quoted
+    add r12, 2            ; 跳过两个引号
+    jmp .quoted_loop
+
+.end_quoted:
+    ; 保存参数指针 (包含引号)
+    mov [r13 + r14 * 8], r15
+    inc r14
+    ; 跳过结束引号后的空格
+    cmp al, 0
+    je .done
+    inc r12               ; 跳过结束引号
+    jmp .skip_initial_spaces
+
+.next_char_skip:
+    inc r12
+    jmp .skip_initial_spaces
+
+.done:
+    ; 设置 argv[argc] = NULL (标准 argv 终止)
+    mov qword [r13 + r14 * 8], 0
+    mov rax, r14
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    leave
+    ret
+%endif
 
 ; ============================================
 ; 静态数据

@@ -19,6 +19,8 @@
 ;   INPUT_FMT_AUTO = 3  (自动检测)
 ; ============================================
 
+default rel
+
 %include "config.inc"
 
 ; ============================================
@@ -501,10 +503,13 @@ read_text_byte:
 
     ; 返回操作数字节 (从 text_op_buf 读取)
     load_addr rbx, text_op_buf
-    mov rcx, [text_op_index]
+    load_addr rcx, text_op_index
+    mov rcx, [rcx]
     mov al, [rbx + rcx]
-    inc qword [text_op_index]
-    inc qword [text_op_count]
+    load_addr rbx, text_op_index
+    inc qword [rbx]
+    load_addr rbx, text_op_count
+    inc qword [rbx]
 
     pop r13
     pop r12

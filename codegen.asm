@@ -10,7 +10,10 @@
 ;   generate_entry(rdi=IR条目指针) → 生成单条 IR 条目的汇编
 ; ============================================
 
+default rel
+
 %include "config.inc"
+%include "ir_defs.inc"
 
 ; ============================================
 ; 导出符号
@@ -25,13 +28,6 @@ extern write_char
 extern write_output
 extern ir_entry_count
 extern get_ir_entry
-extern IR_MNEMONIC_OFF
-extern IR_OP1_OFF
-extern IR_OP2_OFF
-extern IR_OP3_OFF
-extern IR_OP4_OFF
-extern IR_OPCOUNT_OFF
-extern IR_RAW_OFF
 
 ; ============================================
 ; 常量字符串

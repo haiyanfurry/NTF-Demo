@@ -494,7 +494,7 @@ show_help:
 write_stderr:
     push rbp
     mov rbp, rsp
-    sub rsp, 32
+    sub rsp, 40          ; 40 + 8(push rbp) + 8(push rsi) = 56 ≡ 8 mod 16 → RSP = 8-56 = -48 ≡ 0 mod 16 ✓
 
     push rsi
     xor rdx, rdx
@@ -563,7 +563,7 @@ write_char:
 write_output:
     push rbp
     mov rbp, rsp
-    sub rsp, 48
+    sub rsp, 56          ; 56 + 8(push rbp) + 8(push rsi) = 72 ≡ 8 mod 16 → RSP = 8-72 = -64 ≡ 0 mod 16 ✓
     push rsi
 
 .write_loop:

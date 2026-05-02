@@ -32,28 +32,11 @@ $NASM $NASMFLAGS input.asm   -o input.o   || exit 1
 $NASM $NASMFLAGS decode.asm  -o decode.o  || exit 1
 $NASM $NASMFLAGS codegen.asm -o codegen.o || exit 1
 
-echo "[2/3] Assembling instruction handlers (legacy)..."
-$NASM $NASMFLAGS nop.asm   -o nop.o   || exit 1
-$NASM $NASMFLAGS mov.asm   -o mov.o   || exit 1
-$NASM $NASMFLAGS add.asm   -o add.o   || exit 1
-$NASM $NASMFLAGS sub.asm   -o sub.o   || exit 1
-$NASM $NASMFLAGS mul.asm   -o mul.o   || exit 1
-$NASM $NASMFLAGS inc.asm   -o inc.o   || exit 1
-$NASM $NASMFLAGS dec.asm   -o dec.o   || exit 1
-$NASM $NASMFLAGS xor.asm   -o xor.o   || exit 1
-$NASM $NASMFLAGS jmp.asm   -o jmp.o   || exit 1
-$NASM $NASMFLAGS push.asm  -o push.o  || exit 1
-$NASM $NASMFLAGS pop.asm   -o pop.o   || exit 1
-$NASM $NASMFLAGS print.asm -o print.o || exit 1
-
 mkdir -p bin
 
-echo "[3/3] Linking..."
+echo "[2/3] Linking..."
 if gcc -m64 -nostdlib -static \
     main.o cpuhdr.o input.o decode.o codegen.o \
-    nop.o mov.o add.o sub.o mul.o \
-    inc.o dec.o xor.o jmp.o push.o pop.o \
-    print.o \
     -o bin/compiler.exe \
     -lkernel32 \
     -Wl,-e,_start \
@@ -75,9 +58,6 @@ else
     ld -e _start \
        --subsystem console \
        main.o cpuhdr.o input.o decode.o codegen.o \
-       nop.o mov.o add.o sub.o mul.o \
-       inc.o dec.o xor.o jmp.o push.o pop.o \
-       print.o \
        -o bin/compiler.exe \
        -lkernel32 && \
     cp bin/compiler.exe compiler.exe && \

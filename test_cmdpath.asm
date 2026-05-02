@@ -133,6 +133,7 @@ parse_cmdline_win:
     inc r14
     cmp al, 0
     je .done
+    mov byte [r12], 0
     inc r12
     jmp .skip_spaces
 
@@ -158,6 +159,7 @@ parse_cmdline_win:
     inc r14
     cmp al, 0
     je .done
+    mov byte [r12], 0
     inc r12
     jmp .skip_spaces
 

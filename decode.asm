@@ -50,6 +50,7 @@ extern insn_table
 extern insn_count
 extern field_table
 extern field_count
+extern write_stderr
 
 ; ============================================
 ; BSS
@@ -106,6 +107,26 @@ decode_next_instruction:
     ; 在指令表中查找
     mov rax, r12
     call find_insn_by_bits
+    ; DEBUG: find_insn_by_bits result
+    push rax
+    push rsi
+    push rdi
+    push rax
+    load_addr rsi, debug_find_result_msg
+    call write_stderr
+    pop rax
+    test rax, rax
+    jz .debug_not_found
+    load_addr rsi, debug_find_nonzero_msg
+    call write_stderr
+    jmp .debug_done
+.debug_not_found:
+    load_addr rsi, debug_find_zero_msg
+    call write_stderr
+.debug_done:
+    pop rdi
+    pop rsi
+    pop rax
     test rax, rax
     jz .unknown_byte      ; 未找到 → db 0xNN
 
@@ -198,12 +219,13 @@ decode_next_instruction:
     load_addr rax, str_db
     mov [rbx + IR_MNEMONIC_OFF], rax
 
-    ; 操作数 = "0xNN"
-    load_addr rdi, temp_hex_str
+    ; 操作数 = "0xNN" - 格式化到内联缓冲区 (temp_ir + IR_INLINE_STR_OFF)
+    lea rdi, [rbx + IR_INLINE_STR_OFF]
     call format_hex_byte    ; r12 = 字节值
 
-    ; 操作数指针指向 temp_hex_str
-    load_addr rax, temp_hex_str
+    ; 操作数指针指向 temp_ir 中的内联缓冲区
+    ; (write_ir_entry 会在复制后修正此指针)
+    lea rax, [rbx + IR_INLINE_STR_OFF]
     mov [rbx + IR_OP1_OFF], rax
     mov qword [rbx + IR_OPCOUNT_OFF], 1
 
@@ -233,6 +255,7 @@ write_ir_entry:
     mov rbp, rsp
     sub rsp, 32
     push r12
+    push r13
 
     ; 检查是否已满
     load_addr rbx, ir_entry_count
@@ -251,11 +274,25 @@ write_ir_entry:
     mov rcx, IR_ENTRY_SIZE / 8
     rep movsq
 
+    ; 修正 IR_OP1_OFF 指针: 如果指向 temp_ir 内部, 重定向到 ir_buffer 对应位置
+    ; 加载 temp_ir 地址到 rax
+    load_addr rax, temp_ir
+    mov rbx, [r12 + IR_OP1_OFF]
+    ; 检查 rbx 是否在 [temp_ir, temp_ir+IR_ENTRY_SIZE) 范围内
+    sub rbx, rax
+    cmp rbx, IR_ENTRY_SIZE
+    jae .no_patch
+    ; 在范围内: 修正为指向 ir_buffer 中的对应位置
+    add rbx, r12
+    mov [r12 + IR_OP1_OFF], rbx
+.no_patch:
+
     ; 更新计数
     load_addr rbx, ir_entry_count
     inc qword [rbx]
 
 .exit:
+    pop r13
     pop r12
     leave
     ret
@@ -353,6 +390,9 @@ nybble_to_hex:
 ; ============================================
 section .data
 str_db:          db "db", 0
+debug_find_result_msg: db "DEBUG: find_insn_by_bits result = ", 0
+debug_find_zero_msg: db "0 (NOT FOUND)", 10, 0
+debug_find_nonzero_msg: db "non-zero (FOUND)", 10, 0
 
 ; ============================================
 ; BSS: 临时十六进制字符串缓冲区

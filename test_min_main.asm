@@ -14,6 +14,8 @@ input_fmt       dq 0
 default_output  db './output.asm', 0
 default_cpu     db './cpu.hdr', 0
 err_open_cpu    db "Error: Cannot open CPU header file.", 10, 0
+debug_prefix    db "DEBUG: cpu_path = ", 0
+debug_newline   db 10, 0
 
 section .text
 global _start
@@ -108,6 +110,16 @@ _start:
     mov [rbx], rax
 
 .has_cpu:
+    ; DEBUG: Print cpu_path string
+    lea rsi, [rel debug_prefix]
+    call write_stderr
+    ; Print the actual path string
+    lea rbx, [rel cpu_path]
+    mov rsi, [rbx]
+    call write_stderr
+    lea rsi, [rel debug_newline]
+    call write_stderr
+
     ; Check input_path
     lea rbx, [rel input_path]
     mov rax, [rbx]
@@ -218,11 +230,12 @@ parse_cmdline_win:
     jmp .unquoted
 
 .end_unquoted:
-    mov [r13 + r14 * 8], r15
+    mov [r13 + r14 * 8], r15     ; Store arg pointer
     inc r14
     cmp al, 0
-    je .done
-    inc r12
+    je .done                     ; If null terminator, done
+    mov byte [r12], 0            ; null-terminate the arg
+    inc r12                      ; Skip delimiter
     jmp .skip_spaces
 
 .quoted:
@@ -243,11 +256,12 @@ parse_cmdline_win:
     jmp .quoted_loop
 
 .end_quoted:
-    mov [r13 + r14 * 8], r15
+    mov [r13 + r14 * 8], r15     ; Store arg pointer (includes opening quote)
     inc r14
     cmp al, 0
-    je .done
-    inc r12
+    je .done                     ; If null terminator, done
+    mov byte [r12], 0            ; null-terminate at the closing quote position
+    inc r12                      ; Skip closing quote
     jmp .skip_spaces
 
 .next_char:

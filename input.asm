@@ -47,6 +47,23 @@ INPUT_FMT_TEXT equ 2
 INPUT_FMT_AUTO equ 3
 
 INPUT_BUF_SIZE equ 4096
+
+; DEBUG strings (only for debugging)
+section .data
+debug_open_input_entry db "DEBUG: entered open_input", 10, 0
+debug_refill_start db "DEBUG: refill called", 10, 0
+debug_refill_ok db "DEBUG: refill OK", 10, 0
+debug_refill_fail db "DEBUG: refill FAIL/EOF", 10, 0
+debug_read_bin_entry db "DEBUG: read_from_bin entry", 10, 0
+debug_read_bin_have db "DEBUG: read_from_bin have_data", 10, 0
+debug_read_bin_eof db "DEBUG: read_from_bin EOF", 10, 0
+debug_read_bin_byte db "DEBUG: byte=0x", 0
+debug_newline db 10, 0
+debug_hex_chars db "0123456789ABCDEF", 0
+debug_tmp_byte_str db "XX", 10, 0   ; 2 hex chars + newline + null
+
+extern write_stderr
+
 HEX_LINE_BUF   equ 256
 
 ; ============================================
@@ -79,8 +96,18 @@ section .text
 open_input:
     push rbp
     mov rbp, rsp
-    sub rsp, 48
+    sub rsp, 56
     push r12
+
+    ; DEBUG
+    push rdi
+    push rsi
+    push rax
+    load_addr rsi, debug_open_input_entry
+    call write_stderr
+    pop rax
+    pop rsi
+    pop rdi
 
     mov r12, rsi         ; 保存格式标志
 
@@ -195,6 +222,12 @@ read_from_binary_buffer:
     sub rsp, 32
     push r12
 
+    ; DEBUG
+    push rsi
+    load_addr rsi, debug_read_bin_entry
+    call write_stderr
+    pop rsi
+
     ; 检查缓冲区是否为空
     load_addr rbx, input_buf_pos
     mov rax, [rbx]
@@ -217,11 +250,55 @@ read_from_binary_buffer:
     mov al, [rbx + rdx]
     inc qword [rcx]       ; input_buf_pos++
 
+    ; DEBUG: 输出读取的字节值到 stderr (十六进制)
+    push rax              ; 字节值保存到栈 [rsp+0]
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi              ; 现在字节值在 [rsp+40] (6次push后)
+    ; 输出 "DEBUG: byte=0x"
+    load_addr rsi, debug_read_bin_byte
+    call write_stderr
+    ; 从栈中恢复字节值 ([rsp+40] 处), 避免使用易失性寄存器 r8
+    ; 高4位
+    mov rax, [rsp + 40]
+    shr al, 4
+    and al, 0x0F
+    movzx rcx, al
+    load_addr rbx, debug_hex_chars
+    mov al, [rbx + rcx]
+    load_addr rsi, debug_tmp_byte_str
+    mov [rsi], al
+    ; 低4位
+    mov rax, [rsp + 40]
+    and al, 0x0F
+    movzx rcx, al
+    load_addr rbx, debug_hex_chars
+    mov al, [rbx + rcx]
+    load_addr rsi, debug_tmp_byte_str
+    mov [rsi + 1], al
+    mov byte [rsi + 2], 10
+    mov byte [rsi + 3], 0
+    call write_stderr
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax               ; 恢复原始字节值
+
     pop r12
     leave
     ret
 
 .eof:
+    ; DEBUG
+    push rsi
+    load_addr rsi, debug_read_bin_eof
+    call write_stderr
+    pop rsi
+
     mov rax, -1
     pop r12
     leave
@@ -236,6 +313,12 @@ refill_input_buffer:
     mov rbp, rsp
     sub rsp, 32
 
+    ; DEBUG
+    push rsi
+    load_addr rsi, debug_refill_start
+    call write_stderr
+    pop rsi
+
     ; sys_read(rdi=input_fd, rsi=input_buf, rdx=INPUT_BUF_SIZE)
     load_addr rbx, input_fd
     mov rdi, [rbx]
@@ -246,6 +329,14 @@ refill_input_buffer:
     test rax, rax
     js .error
     jz .eof
+
+    ; DEBUG
+    push rsi
+    push rax
+    load_addr rsi, debug_refill_ok
+    call write_stderr
+    pop rax
+    pop rsi
 
     ; 更新缓冲区指针
     load_addr rbx, input_buf_pos
@@ -258,6 +349,12 @@ refill_input_buffer:
 
 .error:
 .eof:
+    ; DEBUG
+    push rsi
+    load_addr rsi, debug_refill_fail
+    call write_stderr
+    pop rsi
+
     xor rax, rax
     leave
     ret
@@ -747,11 +844,11 @@ close_input:
     ret
 
 ; ============================================
-; 静态数据段 (用于十六进制解析状态)
+; 静态数据段
 ; ============================================
 section .data
-hex_state_pos   dq 0     ; 当前位置
-hex_state_count dq 0     ; 数据长度
+hex_state_pos   dq 0     ; 十六进制解析当前位置
+hex_state_count dq 0     ; 十六进制解析数据长度
 
 ; ============================================
 ; BSS (续)

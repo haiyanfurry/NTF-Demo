@@ -21,6 +21,7 @@ global out_fd
 global write_char
 global write_output
 global flush_output
+global write_stderr
 
 ; ============================================
 ; 外部引用
@@ -58,6 +59,7 @@ cpu_path        dq 0           ; CPU 头文件路径指针
 ir_path         dq 0           ; IR 输出路径指针 (可选)
 output_path     dq 0           ; 输出文件路径指针
 input_fmt       dq INPUT_FMT_AUTO  ; 输入格式
+pos_count       dq 0           ; 位置参数计数器
 
 ; 默认值
 default_output  db './output.asm', 0
@@ -260,8 +262,26 @@ _start:
     sys_exit
 
 .is_positional:
-    ; 位置参数 = 输入文件
+    ; 根据位置参数计数分配不同变量
+    load_addr rbx, pos_count
+    mov rax, [rbx]
+    inc qword [rbx]
+    test rax, rax
+    jnz .pos_output
+    ; 第1个位置参数 = 输入文件
     load_addr rbx, input_path
+    mov [rbx], rdi
+    jmp .parse_args_loop
+.pos_output:
+    cmp rax, 1
+    jne .pos_cpu
+    ; 第2个位置参数 = 输出文件
+    load_addr rbx, output_path
+    mov [rbx], rdi
+    jmp .parse_args_loop
+.pos_cpu:
+    ; 第3个位置参数 = CPU头文件
+    load_addr rbx, cpu_path
     mov [rbx], rdi
     jmp .parse_args_loop
 
@@ -313,9 +333,29 @@ _start:
     ; ============================================
     ; Step 1: 解析 CPU 头文件
     ; ============================================
+    ; DEBUG
+    load_addr rsi, debug_prefix
+    call write_stderr
+    load_addr rbx, cpu_path
+    mov rsi, [rbx]
+    call write_stderr
+    load_addr rsi, debug_newline
+    call write_stderr
+
     load_addr rbx, cpu_path
     mov rdi, [rbx]
     call parse_cpu_header
+
+    ; DEBUG: after parse_cpu_header
+    push rdi
+    push rsi
+    push rax
+    load_addr rsi, debug_after_parse_msg
+    call write_stderr
+    pop rax
+    pop rsi
+    pop rdi
+
     test rax, rax
     jz .cpu_ok
 
@@ -328,12 +368,54 @@ _start:
     ; ============================================
     ; Step 2: 打开输出文件
     ; ============================================
+    ; DEBUG: entering .cpu_ok
+    push rdi
+    push rsi
+    push rax
+    load_addr rsi, debug_cpu_ok_msg
+    call write_stderr
+    pop rax
+    pop rsi
+    pop rdi
+
 %ifdef TARGET_WIN64
     load_addr rbx, output_path
     mov rdi, [rbx]
+    ; DEBUG: output_path
+    push rdi
+    push rsi
+    push rax
+    load_addr rsi, debug_open_output_msg
+    call write_stderr
+    pop rax
+    pop rsi
+    pop rdi
+    
     mov rsi, 0x401
     xor rdx, rdx
+    
+    ; DEBUG: before CreateFileA for output
+    push rdi
+    push rsi
+    push rax
+    load_addr rsi, debug_before_create_msg
+    call write_stderr
+    pop rax
+    pop rsi
+    pop rdi
+    
     sys_open
+    
+    ; DEBUG: after CreateFileA
+    push rdi
+    push rsi
+    push rax
+    load_addr rsi, debug_after_create_msg
+    call write_stderr
+    pop rax
+    pop rsi
+    pop rdi
+    
     test rax, rax
     js .error_output
     load_addr rbx, out_fd
@@ -353,10 +435,40 @@ _start:
     ; ============================================
     ; Step 3: 打开输入文件
     ; ============================================
+    ; DEBUG: Step 3 start
+    push rdi
+    push rsi
+    push rax
+    load_addr rsi, debug_step3_msg
+    call write_stderr
+    pop rax
+    pop rsi
+    pop rdi
+
     load_addr rbx, input_path
     mov rdi, [rbx]
+    ; DEBUG: input path
+    push rdi
+    push rsi
+    push rax
+    load_addr rsi, debug_input_path_msg
+    call write_stderr
+    pop rax
+    pop rsi
+    pop rdi
+
     load_addr rsi, input_fmt
     mov rsi, [rsi]
+    ; DEBUG: about to call open_input
+    push rdi
+    push rsi
+    push rax
+    load_addr rsi, debug_call_open_input_msg
+    call write_stderr
+    pop rax
+    pop rsi
+    pop rdi
+
     call open_input
     test rax, rax
     jz .input_ok
@@ -665,10 +777,11 @@ parse_cmdline_win:
     ; 保存参数指针
     mov [r13 + r14 * 8], r15
     inc r14
-    ; 跳过当前字符 (空格分隔符)
+    ; null-terminate 当前参数
     cmp al, 0
-    je .done
-    inc r12
+    je .done                     ; 如果是字符串结束, 不需要写 null
+    mov byte [r12], 0            ; 将分隔符替换为 null 字节
+    inc r12                      ; 跳过原分隔符
     jmp .skip_initial_spaces
 
 .quoted_arg:
@@ -694,10 +807,11 @@ parse_cmdline_win:
     ; 保存参数指针 (包含引号)
     mov [r13 + r14 * 8], r15
     inc r14
-    ; 跳过结束引号后的空格
+    ; null-terminate 当前参数
     cmp al, 0
-    je .done
-    inc r12               ; 跳过结束引号
+    je .done                     ; 如果是字符串结束, 不需要写 null
+    mov byte [r12], 0            ; 在结束引号位置写入 null 字节
+    inc r12                      ; 跳过结束引号
     jmp .skip_initial_spaces
 
 .next_char_skip:
@@ -722,3 +836,15 @@ parse_cmdline_win:
 ; ============================================
 section .data
 stderr_char     db 0, 0
+debug_prefix         db "DEBUG: cpu_path = ", 0
+debug_newline        db 10, 0
+debug_open_ok        db "DEBUG: CreateFileA OK", 10, 0
+debug_after_parse_msg db "DEBUG: after parse_cpu_header", 10, 0
+debug_cpu_ok_msg      db "DEBUG: entering .cpu_ok", 10, 0
+debug_open_output_msg db "DEBUG: opening output file", 10, 0
+debug_open_fail          db "DEBUG: CreateFileA FAILED", 10, 0
+debug_before_create_msg db "DEBUG: before CreateFileA (output)", 10, 0
+debug_after_create_msg  db "DEBUG: after CreateFileA (output)", 10, 0
+debug_step3_msg         db "DEBUG: Step 3 start", 10, 0
+debug_input_path_msg    db "DEBUG: input path = ", 0
+debug_call_open_input_msg db "DEBUG: about to call open_input", 10, 0

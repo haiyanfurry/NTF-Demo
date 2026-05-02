@@ -35,6 +35,8 @@ global insn_count
 global field_table
 global field_count
 
+extern write_stderr
+
 ; ============================================
 ; BSS: 运行时数据结构
 ; ============================================
@@ -78,7 +80,15 @@ parse_cpu_header:
     mov rbp, rsp
     sub rsp, 64
 
-    ; 初始化
+    ; DEBUG: print entry message
+    ; 注意: write_stderr 会破坏 rdi (stderr 句柄),
+    ; 所以先保存 cpu_path
+    push rdi
+    load_addr rsi, debug_enter_msg
+    call write_stderr
+    pop rdi
+
+    ; 初始化计数器
     load_addr rbx, insn_count
     mov qword [rbx], 0
     load_addr rbx, field_count
@@ -86,18 +96,64 @@ parse_cpu_header:
     load_addr rbx, str_pool_pos
     mov qword [rbx], 0
 
-    ; 打开头文件 (rdi 已经指向路径)
+    ; DEBUG: check init done
+    push rdi
+    load_addr rsi, debug_init_msg
+    call write_stderr
+    pop rdi
+
+    ; 打开头文件 (rdi = cpu_path, 从 push/pop 恢复)
+    ; DEBUG: before sys_open
+    push rdi
+    load_addr rsi, debug_open_msg
+    call write_stderr
+    pop rdi
+
     xor rsi, rsi       ; O_RDONLY
     xor rdx, rdx
     sys_open
+    ; DEBUG: after sys_open
+    push rax
+    push rdi
+    load_addr rsi, debug_after_msg
+    call write_stderr
+    pop rdi
+    pop rax
+
     test rax, rax
     js .error
+
+    ; DEBUG: sys_open returned OK
+    push rdi
+    push rax
+    load_addr rsi, debug_ok_msg
+    call write_stderr
+    pop rax
+    pop rdi
 
     load_addr rbx, hdr_fd
     mov [rbx], rax
 
+    ; DEBUG: after hdr_fd store
+    push rdi
+    load_addr rsi, debug_store_msg
+    call write_stderr
+    pop rdi
+
+    ; DEBUG: before parse loop
+    push rdi
+    load_addr rsi, debug_loop_msg
+    call write_stderr
+    pop rdi
+
     ; 主解析循环: 逐行读取
 .parse_loop:
+    ; DEBUG: calling read_hdr_line
+    push rdi
+    load_addr rsi, debug_read_msg
+    call write_stderr
+    pop rdi
+
     call read_hdr_line
     test rax, rax
     jz .done            ; EOF
@@ -153,7 +209,33 @@ parse_cpu_header:
 .parse_insn:
     ; 格式: 指令 <name> mask=0x... pattern=0x... [operands=...]
     ; 当前 rsi 指向 mask token
+    push rsi
+    push rdi
+    push rax
+    load_addr rsi, debug_parse_insn_msg
+    call write_stderr
+    pop rax
+    pop rdi
+    pop rsi
     call parse_insn_stmt
+    ; DEBUG: print insn count after parsing
+    push rsi
+    push rdi
+    push rax
+    load_addr rsi, debug_insn_count_msg
+    call write_stderr
+    load_addr rbx, insn_count
+    mov rax, [rbx]
+    ; 简单数字转字符
+    add al, '0'
+    load_addr rsi, debug_tmp_char
+    mov [rsi], al
+    mov byte [rsi+1], 10
+    mov byte [rsi+2], 0
+    call write_stderr
+    pop rax
+    pop rdi
+    pop rsi
     jmp .parse_loop
 
 .parse_field:
@@ -188,6 +270,12 @@ read_hdr_line:
     push r12
     sub rsp, 32
 
+    ; DEBUG: entered read_hdr_line
+    push rdi
+    load_addr rsi, debug_enter_read_msg
+    call write_stderr
+    pop rdi
+
     ; 清空行缓冲区
     load_addr rdi, hdr_line_buf
     mov rcx, LINE_BUF_SIZE
@@ -196,12 +284,52 @@ read_hdr_line:
 
     xor r12, r12
 .read_loop:
+    ; DEBUG: before sys_read
+    push rdi
+    push rax
+    load_addr rsi, debug_bread_msg
+    call write_stderr
+    pop rax
+    pop rdi
+
+    ; DEBUG: check hdr_fd value
+    push rdi
+    load_addr rbx, hdr_fd
+    mov rdi, [rbx]
+    ; hdr_fd in rdi now - print it as hex
+    ; We'll use a simplified approach - just print "hdr_fd = "
+    push rdi
+    push rsi
+    push rax
+    push rcx
+    load_addr rsi, debug_fd_msg
+    call write_stderr
+    pop rcx
+    pop rax
+    pop rsi
+    pop rdi
+    ; rdi still has hdr_fd value
+    ; Now convert hdr_fd to hex and print
+    ; Actually let's just print a marker with the fd value in decimal
+    ; For safety, skip hex conversion and just store
+    pop rdi
+
     ; sys_read(rdi=hdr_fd, rsi=char_buf, rdx=1)
     load_addr rbx, hdr_fd
     mov rdi, [rbx]
     load_addr rsi, char_buf
     mov rdx, 1
     sys_read
+
+    ; DEBUG: after sys_read
+    push rdi
+    push rax
+    push rsi
+    load_addr rsi, debug_after_read_msg
+    call write_stderr
+    pop rsi
+    pop rax
+    pop rdi
 
     test rax, rax
     jz .eof
@@ -222,6 +350,16 @@ read_hdr_line:
     jl .read_loop
 
 .line_end:
+    ; DEBUG: entered .line_end
+    push rdi
+    push rax
+    push rsi
+    load_addr rsi, debug_line_end_msg
+    call write_stderr
+    pop rsi
+    pop rax
+    pop rdi
+
     ; 0 结尾
     load_addr rbx, hdr_line_buf
     mov byte [rbx + r12], 0
@@ -233,6 +371,16 @@ read_hdr_line:
     xor rax, rax
 
 .exit:
+    ; DEBUG: entered .exit
+    push rdi
+    push rax
+    push rsi
+    load_addr rsi, debug_exit_msg
+    call write_stderr
+    pop rsi
+    pop rax
+    pop rdi
+
     add rsp, 32
     pop r12
     pop rbp
@@ -1353,3 +1501,20 @@ str_size_prefix:    db "size=", 0
 str_bits_prefix:    db "bits=", 0
 str_type_prefix:    db "type=", 0
 str_value_prefix:   db "value=", 0
+debug_enter_msg     db "DEBUG: enter parse_cpu_header", 10, 0
+debug_init_msg      db "DEBUG: init done", 10, 0
+debug_open_msg      db "DEBUG: before sys_open", 10, 0
+debug_after_msg     db "DEBUG: after sys_open", 10, 0
+debug_ok_msg        db "DEBUG: sys_open returned OK", 10, 0
+debug_store_msg     db "DEBUG: after hdr_fd store", 10, 0
+debug_loop_msg      db "DEBUG: before parse loop", 10, 0
+debug_read_msg      db "DEBUG: calling read_hdr_line", 10, 0
+debug_enter_read_msg db "DEBUG: entered read_hdr_line", 10, 0
+debug_bread_msg     db "DEBUG: before sys_read in read_hdr_line", 10, 0
+debug_fd_msg        db "DEBUG: about to call sys_read", 10, 0
+debug_after_read_msg db "DEBUG: after sys_read returned OK", 10, 0
+debug_line_end_msg   db "DEBUG: .line_end", 10, 0
+debug_exit_msg       db "DEBUG: .exit", 10, 0
+debug_parse_insn_msg db "DEBUG: parsing instruction...", 10, 0
+debug_insn_count_msg db "DEBUG: insn_count = ", 0
+debug_tmp_char       db "X", 10, 0

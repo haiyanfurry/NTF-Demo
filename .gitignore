@@ -1,0 +1,7 @@
+*.o
+*.exe
+output.asm
+bin/
+build/
+nul
+

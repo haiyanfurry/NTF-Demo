@@ -39,6 +39,7 @@ global get_ir_entry
 global ir_entry_count
 global clear_ir_buffer
 global IR_ENTRY_SIZE
+global format_hex_byte
 
 ; ============================================
 ; 外部引用
@@ -157,6 +158,23 @@ decode_next_instruction:
     mov r15b, [r13 + INSN_OPCOUNT_OFF]
     mov [rbx + IR_OPCOUNT_OFF], r15
 
+    ; DEBUG: print op_count
+    push rax
+    push rsi
+    push rdi
+    load_addr rsi, debug_op_count_msg
+    call write_stderr
+    mov al, r15b
+    add al, '0'
+    mov [debug_tmp_char], al
+    load_addr rsi, debug_tmp_char
+    call write_stderr
+    load_addr rsi, debug_newline_str
+    call write_stderr
+    pop rdi
+    pop rsi
+    pop rax
+
     ; 4. 解析操作数字段
     test r15, r15
     jz .finish_entry       ; 没有操作数
@@ -168,14 +186,65 @@ decode_next_instruction:
     cmp r14, r15           ; 使用 r15 中的 op_count (非易失寄存器, 不被 read_next_byte 修改)
     jge .finish_entry
 
+    ; DEBUG: op_count and operand index
+    push rax
+    push rsi
+    push rdi
+    load_addr rsi, debug_op_info_msg
+    call write_stderr
+    mov al, r14b
+    add al, '0'
+    mov [debug_tmp_char], al
+    load_addr rsi, debug_tmp_char
+    call write_stderr
+    load_addr rsi, debug_newline_str
+    call write_stderr
+    pop rdi
+    pop rsi
+    pop rax
+
     ; 获取字段索引 (直接使用 al, 避免覆盖 r15)
     mov al, [r13 + INSN_OPS_OFF + r14]
+
+    ; DEBUG: field index value
+    push rax
+    push rsi
+    push rdi
+    load_addr rsi, debug_field_idx_msg
+    call write_stderr
+    mov al, [r13 + INSN_OPS_OFF + r14]
+    add al, '0'
+    mov [debug_tmp_char], al
+    load_addr rsi, debug_tmp_char
+    call write_stderr
+    load_addr rsi, debug_newline_str
+    call write_stderr
+    pop rdi
+    pop rsi
+    pop rax
 
     ; 获取字段条目指针
     load_addr rbx, field_table
     movzx rax, al
     imul rax, FIELD_ENTRY_SIZE
     add rbx, rax            ; rbx = 字段条目指针
+
+    ; DEBUG: check is_imm flag
+    push rax
+    push rsi
+    push rdi
+    load_addr rsi, debug_is_imm_msg
+    call write_stderr
+    mov al, [rbx + FIELD_IS_IMM_OFF]
+    add al, '0'
+    mov [debug_tmp_char], al
+    load_addr rsi, debug_tmp_char
+    call write_stderr
+    load_addr rsi, debug_newline_str
+    call write_stderr
+    pop rdi
+    pop rsi
+    pop rax
 
     ; 从原始字节中提取字段值
     mov rax, [rbx + FIELD_BITMASK_OFF]   ; bitmask
@@ -188,11 +257,42 @@ decode_next_instruction:
     cmp byte [rbx + FIELD_IS_IMM_OFF], 0
     jne .as_immediate
 
+    ; DEBUG: about to call lookup_field_value
+    push rax
+    push rsi
+    push rdi
+    load_addr rsi, debug_lookup_call_msg
+    call write_stderr
+    pop rdi
+    pop rsi
+    pop rax
+
     ; 查找字段值名称
     mov rdi, rbx
     call lookup_field_value
+
+    ; DEBUG: lookup result
+    push rax
+    push rsi
+    push rdi
+    load_addr rsi, debug_lookup_result_msg
+    call write_stderr
+    pop rdi
+    pop rsi
+    pop rax
+
     test rax, rax
     jnz .store_operand
+
+    ; DEBUG: lookup returned 0
+    push rax
+    push rsi
+    push rdi
+    load_addr rsi, debug_lookup_zero_msg
+    call write_stderr
+    pop rdi
+    pop rsi
+    pop rax
 
     ; 未找到 → 作为十六进制值输出
     ; 构建 "0xNN" 字符串
@@ -470,9 +570,17 @@ debug_find_nonzero_msg: db "non-zero (FOUND)", 10, 0
 debug_imm_msg:   db "DEBUG: imm_byte=", 0
 debug_newline_str: db 10, 0
 debug_iter_msg:  db "DEBUG: decode_next_instruction called", 10, 0
+debug_op_info_msg: db "DEBUG: operand index = ", 0
+debug_field_idx_msg: db "DEBUG: field index = ", 0
+debug_is_imm_msg: db "DEBUG: is_imm flag = ", 0
+debug_lookup_call_msg: db "DEBUG: calling lookup_field_value", 10, 0
+debug_lookup_result_msg: db "DEBUG: lookup_field_value result = non-zero (found name)", 10, 0
+debug_lookup_zero_msg: db "DEBUG: lookup_field_value returned 0 (NOT FOUND)", 10, 0
+debug_op_count_msg: db "DEBUG: op_count = ", 0
 
 ; ============================================
 ; BSS (续)
 ; ============================================
 section .bss
 temp_hex_str    resb 16
+debug_tmp_char  resb 2

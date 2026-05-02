@@ -109,6 +109,7 @@ generate_entry:
     mov rbp, rsp
     sub rsp, 48
     push r12
+    push r14
 
     mov r12, rdi           ; r12 = IR 条目指针
 
@@ -136,29 +137,29 @@ generate_entry:
     call write_char
 
     ; 输出操作数 (逗号分隔)
-    xor rcx, rcx           ; 操作数索引
+    xor r14, r14           ; 操作数索引 (使用非易失寄存器, 避免被 write_output/write_char 破坏)
 .op_loop:
-    cmp rcx, 4
+    cmp r14, 4
     jge .end_line
-    cmp rcx, rax
+    cmp r14, rax
     jge .end_line
 
     ; 输出逗号 (非第一个操作数)
-    test rcx, rcx
+    test r14, r14
     jz .no_comma
     load_addr rsi, str_comma_space
     call write_output
 
 .no_comma:
     ; 获取操作数指针
-    mov rsi, [r12 + IR_OP1_OFF + rcx * 8]
+    mov rsi, [r12 + IR_OP1_OFF + r14 * 8]
     test rsi, rsi
     jz .next_op
 
     call write_output
 
 .next_op:
-    inc rcx
+    inc r14
     jmp .op_loop
 
 .end_line:
@@ -195,6 +196,7 @@ generate_entry:
     call write_char
 
 .exit:
+    pop r14
     pop r12
     leave
     ret

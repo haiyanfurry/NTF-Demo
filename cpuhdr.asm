@@ -36,6 +36,7 @@ global field_table
 global field_count
 
 extern write_stderr
+extern format_hex_byte
 
 ; ============================================
 ; BSS: 运行时数据结构
@@ -65,6 +66,10 @@ char_buf        resb 1
 
 ; 头文件句柄/描述符
 hdr_fd          resq 1
+
+; DEBUG 辅助变量
+debug_tmp_char2 resb 2
+debug_tmp_hex2  resb 8
 
 section .text
 
@@ -1479,17 +1484,89 @@ lookup_field_value:
     push rbx
     push rcx
     push rdx
+    push r12              ; r12 被 format_hex_byte 使用
 
-    mov r8, rax          ; r8 = 要查找的值
+    mov r8, rax           ; r8 = 要查找的值
+
+    ; === DEBUG: 打印要查找的值 ===
+    push rax
+    push rsi
+    push rdi
+    push rcx
+    push rbx
+    push r12
+    load_addr rsi, debug_lookup_val_msg
+    call write_stderr
+    mov r12, r8
+    load_addr rdi, debug_tmp_hex2
+    call format_hex_byte
+    load_addr rsi, debug_tmp_hex2
+    call write_stderr
+    load_addr rsi, debug_nl_str
+    call write_stderr
+    pop r12
+    pop rbx
+    pop rcx
+    pop rdi
+    pop rsi
+    pop rax
 
     ; 获取值表指针
     mov rbx, [rdi + FIELD_VALTAB_OFF]
+
+    ; === DEBUG: 打印值表指针 (原始 hex 值) ===
+    push rax
+    push rsi
+    push rdi
+    push rcx
+    push rbx
+    push r12
+    load_addr rsi, debug_valtab_ptr_msg
+    call write_stderr
+    mov r12, rbx
+    load_addr rdi, debug_tmp_hex2
+    call format_hex_byte
+    load_addr rsi, debug_tmp_hex2
+    call write_stderr
+    load_addr rsi, debug_nl_str
+    call write_stderr
+    pop r12
+    pop rbx
+    pop rcx
+    pop rdi
+    pop rsi
+    pop rax
+
     test rbx, rbx
     jz .not_found
 
     ; 获取值计数
     xor rcx, rcx
     mov cl, [rdi + FIELD_VALCOUNT_OFF]
+
+    ; === DEBUG: 打印值计数 ===
+    push rax
+    push rsi
+    push rdi
+    push rcx
+    push rbx
+    push r12
+    load_addr rsi, debug_valcount_msg
+    call write_stderr
+    mov al, cl
+    add al, '0'
+    mov [debug_tmp_char2], al
+    load_addr rsi, debug_tmp_char2
+    call write_stderr
+    load_addr rsi, debug_nl_str
+    call write_stderr
+    pop r12
+    pop rbx
+    pop rcx
+    pop rdi
+    pop rsi
+    pop rax
+
     test rcx, rcx
     jz .not_found
 
@@ -1509,6 +1586,7 @@ lookup_field_value:
     mov rax, [rbx + VALUE_NAME_OFF]
 
 .exit:
+    pop r12
     pop rdx
     pop rcx
     pop rbx
@@ -1534,15 +1612,20 @@ debug_init_msg      db "DEBUG: init done", 10, 0
 debug_open_msg      db "DEBUG: before sys_open", 10, 0
 debug_after_msg     db "DEBUG: after sys_open", 10, 0
 debug_ok_msg        db "DEBUG: sys_open returned OK", 10, 0
-debug_store_msg     db "DEBUG: after hdr_fd store", 10, 0
-debug_loop_msg      db "DEBUG: before parse loop", 10, 0
-debug_read_msg      db "DEBUG: calling read_hdr_line", 10, 0
-debug_enter_read_msg db "DEBUG: entered read_hdr_line", 10, 0
-debug_bread_msg     db "DEBUG: before sys_read in read_hdr_line", 10, 0
-debug_fd_msg        db "DEBUG: about to call sys_read", 10, 0
-debug_after_read_msg db "DEBUG: after sys_read returned OK", 10, 0
-debug_line_end_msg   db "DEBUG: .line_end", 10, 0
-debug_exit_msg       db "DEBUG: .exit", 10, 0
-debug_parse_insn_msg db "DEBUG: parsing instruction...", 10, 0
-debug_insn_count_msg db "DEBUG: insn_count = ", 0
-debug_tmp_char       db "X", 10, 0
+debug_store_msg         db "DEBUG: after hdr_fd store", 10, 0
+debug_loop_msg          db "DEBUG: before parse loop", 10, 0
+debug_read_msg          db "DEBUG: calling read_hdr_line", 10, 0
+debug_enter_read_msg    db "DEBUG: entered read_hdr_line", 10, 0
+debug_bread_msg         db "DEBUG: before sys_read in read_hdr_line", 10, 0
+debug_fd_msg            db "DEBUG: about to call sys_read", 10, 0
+debug_after_read_msg    db "DEBUG: after sys_read returned OK", 10, 0
+debug_line_end_msg      db "DEBUG: .line_end", 10, 0
+debug_exit_msg          db "DEBUG: .exit", 10, 0
+debug_parse_insn_msg    db "DEBUG: parsing instruction...", 10, 0
+debug_insn_count_msg    db "DEBUG: insn_count = ", 0
+debug_tmp_char          db "X", 10, 0
+; lookup_field_value DEBUG 字符串
+debug_lookup_val_msg    db "DEBUG: lookup_field_value: value to find = 0x", 0
+debug_valtab_ptr_msg    db "DEBUG: val_table_ptr (hex) = 0x", 0
+debug_valcount_msg      db "DEBUG: val_count = ", 0
+debug_nl_str            db 10, 0

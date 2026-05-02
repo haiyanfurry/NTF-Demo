@@ -156,7 +156,7 @@ parse_cpu_header:
 
     call read_hdr_line
     test rax, rax
-    jz .done            ; EOF
+    js .done            ; EOF (read_hdr_line 返回负值表示真正的 EOF)
 
     ; 跳过空行和注释
     load_addr rsi, hdr_line_buf
@@ -364,11 +364,38 @@ read_hdr_line:
     load_addr rbx, hdr_line_buf
     mov byte [rbx + r12], 0
 
+    ; 如果当前行结束字符是 CR (0x0D)，消费后续的 LF (0x0A)
+    ; 避免残留的 \n 被下一次 read_hdr_line 读取导致空行误判为 EOF
+    cmp al, 13
+    jne .line_end_no_cr
+
+    ; 读取下一个字节 (期望是 \n，对于 Windows \r\n 行尾)
+    push rax
+    push rcx
+    push rdx
+    push rdi
+    push rsi
+    push r11
+    load_addr rbx, hdr_fd
+    mov rdi, [rbx]
+    load_addr rsi, char_buf
+    mov rdx, 1
+    sys_read
+    pop r11
+    pop rsi
+    pop rdi
+    pop rdx
+    pop rcx
+    pop rax
+    ; 忽略结果: 如果是 \n 则已消费，如果是 EOF/错误也无关紧要
+
+.line_end_no_cr:
     mov rax, r12
     jmp .exit
 
 .eof:
-    xor rax, rax
+    ; 返回 -1 表示真正的 EOF (区别于空行的 rax=0)
+    or rax, -1
 
 .exit:
     ; DEBUG: entered .exit
@@ -555,17 +582,18 @@ parse_insn_stmt:
     mov r13, rax
 
     ; 存储指令名称到 str_pool
-    load_addr rdi, token_buf
-    load_addr rsi, str_pool
+    load_addr rsi, token_buf          ; rsi = 源 = token_buf
+    load_addr rdi, str_pool           ; rdi = 目标 = str_pool
     load_addr rbx, str_pool_pos
-    add rsi, [rbx]
-    mov rdi, rsi            ; rsi = str_pool + str_pool_pos
-    load_addr r8, token_buf
+    add rdi, [rbx]                    ; rdi = str_pool + str_pool_pos
     call strcpy_cpuhdr
 
-    ; 更新 name_ptr
+    ; 更新 name_ptr = str_pool + str_pool_pos (复制前的位置)
     load_addr rbx, str_pool_pos
-    mov [r12 + INSN_NAME_OFF], rsi
+    load_addr rax, str_pool
+    add rax, [rbx]
+    mov [r12 + INSN_NAME_OFF], rax
+
     ; 更新 str_pool_pos
     load_addr rdi, token_buf
     call strlen_cpuhdr
@@ -846,7 +874,7 @@ parse_field_stmt:
     pop r12
 
     test rax, rax
-    jz .finish_field
+    jle .finish_field    ; 0 = 空行结束字段, 负值 = EOF
 
     ; 检查是否是缩进行 (以空格或 tab 开头)
     load_addr rsi, hdr_line_buf

@@ -16,39 +16,20 @@ fi
 # 确保 bin 目录存在
 mkdir -p bin
 
-echo "[1/3] Assembling core modules..."
+echo "[1/2] Assembling core modules..."
 
-# 编译核心模块
+# 编译核心模块 (v2.0: 只使用通用解码器，无需旧指令模块)
 nasm -f elf64 main.asm    -o main.o    || exit 1
 nasm -f elf64 cpuhdr.asm  -o cpuhdr.o  || exit 1
 nasm -f elf64 input.asm   -o input.o   || exit 1
 nasm -f elf64 decode.asm  -o decode.o  || exit 1
 nasm -f elf64 codegen.asm -o codegen.o || exit 1
 
-echo "[2/3] Assembling instruction handlers (legacy)..."
+echo "[2/2] Linking..."
 
-# 仍然保留旧指令模块用于兼容
-nasm -f elf64 nop.asm   -o nop.o   || exit 1
-nasm -f elf64 mov.asm   -o mov.o   || exit 1
-nasm -f elf64 add.asm   -o add.o   || exit 1
-nasm -f elf64 sub.asm   -o sub.o   || exit 1
-nasm -f elf64 mul.asm   -o mul.o   || exit 1
-nasm -f elf64 inc.asm   -o inc.o   || exit 1
-nasm -f elf64 dec.asm   -o dec.o   || exit 1
-nasm -f elf64 xor.asm   -o xor.o   || exit 1
-nasm -f elf64 jmp.asm   -o jmp.o   || exit 1
-nasm -f elf64 push.asm  -o push.o  || exit 1
-nasm -f elf64 pop.asm   -o pop.o   || exit 1
-nasm -f elf64 print.asm -o print.o || exit 1
-
-echo "[3/3] Linking..."
-
-# 链接 (包含所有模块)
+# 链接 (只包含核心模块)
 ld -m elf_x86_64 \
     main.o cpuhdr.o input.o decode.o codegen.o \
-    nop.o mov.o add.o sub.o mul.o \
-    inc.o dec.o xor.o jmp.o push.o pop.o \
-    print.o \
     -o bin/compiler
 
 if [ $? -eq 0 ]; then

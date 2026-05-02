@@ -11,6 +11,7 @@
 default rel
 
 %include "config.inc"
+%include "ir_defs.inc"
 
 ; ============================================
 ; 导出符号
@@ -36,6 +37,7 @@ extern INPUT_FMT_TEXT
 extern INPUT_FMT_AUTO
 
 extern decode_next_instruction
+extern get_ir_entry
 extern ir_entry_count
 extern clear_ir_buffer
 
@@ -93,6 +95,8 @@ out_pos         resq 1
 
 ; IR 文件句柄
 ir_fd           resq 1
+ir_char_buf     resb 1          ; write_ir_char 临时缓冲区
+ir_hex_buf      resb 2          ; write_ir_hex_byte 临时缓冲区
 
 section .text
 
@@ -626,20 +630,309 @@ write_stderr:
 
 ; ============================================
 ; write_ir_file: 将 IR 内容写入调试文件
-; (Phase 3 完整实现)
+; 遍历所有 IR 条目，输出格式化的调试文本到 ir_fd
 ; ============================================
 write_ir_file:
     push rbp
     mov rbp, rsp
     sub rsp, 64
-    push r12
-    push r13
+    push r12          ; entry count
+    push r13          ; loop index
+    push r14          ; entry pointer
+    push r15          ; operand index
 
-    ; 占位 - Phase 3 实现
-    ; 需要遍历 ir_entry_count, 写入格式化的 IR 文本
+    ; 获取 IR 条目数
+    load_addr r12, ir_entry_count
+    mov r12, [r12]
+    test r12, r12
+    jz .done
 
+    ; 输出头: "=== IR Dump (N entries) ===" + newline
+    load_addr rsi, ir_str_header1
+    call write_ir_str
+    mov rax, r12
+    call write_ir_dec_num
+    load_addr rsi, ir_str_header2
+    call write_ir_str
+    mov al, 10
+    call write_ir_char
+
+    ; 遍历所有 IR 条目
+    xor r13, r13
+
+.loop:
+    mov rdi, r13
+    call get_ir_entry
+    test rax, rax
+    jz .next
+
+    mov r14, rax        ; r14 = IR 条目指针
+
+    ; 输出索引: "[%3d] "
+    mov al, '['
+    call write_ir_char
+    mov rax, r13
+    call write_ir_dec_num
+    load_addr rsi, ir_str_bracket
+    call write_ir_str
+
+    ; 输出助记符
+    mov rsi, [r14 + IR_MNEMONIC_OFF]
+    test rsi, rsi
+    jnz .has_mnemonic
+    load_addr rsi, ir_str_unknown
+.has_mnemonic:
+    call write_ir_str
+
+    ; 输出空格填充 (对齐到至少 8 字符)
+    push r14
+    call write_ir_pad8
+    pop r14
+
+    ; 输出 " raw=0x"
+    load_addr rsi, ir_str_raw
+    call write_ir_str
+
+    ; 输出原始字节 (十六进制)
+    mov al, [r14 + IR_RAW_OFF]
+    call write_ir_hex_byte
+
+    ; 输出 "  ops="
+    load_addr rsi, ir_str_ops
+    call write_ir_str
+
+    ; 输出操作数数量
+    mov rax, [r14 + IR_OPCOUNT_OFF]
+    call write_ir_dec_num
+
+    ; 输出操作数字符串 (逗号分隔)
+    mov rax, [r14 + IR_OPCOUNT_OFF]
+    test rax, rax
+    jz .end_line
+
+    xor r15, r15
+.op_loop:
+    cmp r15, 4
+    jge .end_line
+    mov rax, [r14 + IR_OPCOUNT_OFF]
+    cmp r15, rax
+    jge .end_line
+
+    ; 逗号分隔 (非第一个)
+    test r15, r15
+    jz .no_comma
+    load_addr rsi, ir_str_comma
+    call write_ir_str
+.no_comma:
+
+    ; 输出操作数字符串
+    mov rsi, [r14 + IR_OP1_OFF + r15 * 8]
+    test rsi, rsi
+    jnz .write_op
+    load_addr rsi, ir_str_null
+.write_op:
+    call write_ir_str
+
+    inc r15
+    jmp .op_loop
+
+.end_line:
+    mov al, 10
+    call write_ir_char
+
+.next:
+    inc r13
+    cmp r13, r12
+    jl .loop
+
+.done:
+    pop r15
+    pop r14
     pop r13
     pop r12
+    leave
+    ret
+
+; ============================================
+; write_ir_str: 写入 null-terminated 字符串到 ir_fd
+; 输入: rsi = 字符串指针
+; ============================================
+write_ir_str:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+    push rsi
+
+    ; 计算字符串长度
+    xor rdx, rdx
+.len_loop:
+    cmp byte [rsi + rdx], 0
+    je .have_len
+    inc rdx
+    jmp .len_loop
+.have_len:
+    test rdx, rdx
+    jz .done
+
+    ; sys_write(ir_fd, rsi, rdx)
+    load_addr rbx, ir_fd
+    mov rdi, [rbx]
+    sys_write
+
+.done:
+    pop rsi
+    leave
+    ret
+
+; ============================================
+; write_ir_char: 写入单个字符到 ir_fd
+; 输入: al = 字符
+; ============================================
+write_ir_char:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+
+    load_addr rbx, ir_char_buf
+    mov [rbx], al
+    mov rsi, rbx
+    mov rdx, 1
+
+    load_addr rbx, ir_fd
+    mov rdi, [rbx]
+    sys_write
+
+    leave
+    ret
+
+; ============================================
+; write_ir_hex_byte: 写入字节的十六进制表示到 ir_fd
+; 输入: al = 字节
+; ============================================
+write_ir_hex_byte:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+    push rcx
+
+    mov cl, al          ; 保存原字节到 cl
+
+    ; 高半字节
+    mov al, cl
+    shr al, 4
+    call .nybble_to_hex
+    load_addr rbx, ir_hex_buf
+    mov [rbx], al
+
+    ; 低半字节
+    mov al, cl
+    and al, 0x0F
+    call .nybble_to_hex
+    load_addr rbx, ir_hex_buf
+    mov [rbx + 1], al
+
+    ; 写入两个字符
+    load_addr rsi, ir_hex_buf
+    mov rdx, 2
+    load_addr rbx, ir_fd
+    mov rdi, [rbx]
+    sys_write
+
+    pop rcx
+    leave
+    ret
+
+.nybble_to_hex:
+    cmp al, 9
+    jbe .digit
+    add al, 'A' - 10
+    ret
+.digit:
+    add al, '0'
+    ret
+
+; ============================================
+; write_ir_dec_num: 写入十进制数字到 ir_fd
+; 输入: rax = 数字
+; ============================================
+write_ir_dec_num:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 56
+    push rbx
+    push rcx
+    push rdx
+
+    mov rbx, 10
+    xor rcx, rcx        ; 数字位数 (用于填充)
+    push 0              ; 哨兵值
+
+.convert:
+    xor rdx, rdx
+    div rbx
+    add dl, '0'
+    push rdx
+    inc rcx
+    test rax, rax
+    jnz .convert
+
+.write:
+    pop rax
+    test al, al
+    jz .done
+
+    ; write_ir_char 的快速内联版本
+    load_addr rbx, ir_char_buf
+    mov [rbx], al
+    mov rsi, rbx
+    mov rdx, 1
+    load_addr rbx, ir_fd
+    mov rdi, [rbx]
+    sys_write
+
+    jmp .write
+
+.done:
+    pop rdx
+    pop rcx
+    pop rbx
+    leave
+    ret
+
+; ============================================
+; write_ir_pad8: 用空格填充到至少 8 字符宽度
+; 输入: rsi = 已写入的字符串指针 (用于计算长度)
+; 注意: 使用 rbx 作为计数器 (callee-saved, 不受 write_ir_char 影响)
+; ============================================
+write_ir_pad8:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+    push rbx
+    push rsi
+
+    ; 计算字符串长度
+    xor rbx, rbx
+.len_loop:
+    cmp byte [rsi + rbx], 0
+    je .have_len
+    inc rbx
+    jmp .len_loop
+.have_len:
+    cmp rbx, 8
+    jge .done
+
+    ; 写入 (8 - len) 个空格
+.pad_loop:
+    mov al, ' '
+    call write_ir_char
+    inc rbx
+    cmp rbx, 8
+    jl .pad_loop
+
+.done:
+    pop rsi
+    pop rbx
     leave
     ret
 
@@ -848,3 +1141,13 @@ debug_after_create_msg  db "DEBUG: after CreateFileA (output)", 10, 0
 debug_step3_msg         db "DEBUG: Step 3 start", 10, 0
 debug_input_path_msg    db "DEBUG: input path = ", 0
 debug_call_open_input_msg db "DEBUG: about to call open_input", 10, 0
+
+; IR 调试输出字符串
+ir_str_header1      db "=== IR Dump (", 0
+ir_str_header2      db " entries) ===", 10, 0
+ir_str_bracket      db "] ", 0
+ir_str_unknown      db "???", 0
+ir_str_raw          db "  raw=0x", 0
+ir_str_ops          db "  ops=", 0
+ir_str_comma        db ", ", 0
+ir_str_null         db "(null)", 0

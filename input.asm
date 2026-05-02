@@ -389,8 +389,9 @@ read_hex_byte:
     test rax, rax
     jz .eof
 
-    ; 重置位置
-    mov qword [r12], 0
+    ; 重置位置并设置行长度
+    mov qword [r12], 0       ; hex_state_pos = 0
+    mov [r13], rax           ; hex_state_count = line_length
 
 .have_hex_data:
     ; 从 hex_line_buf 读取两个十六进制字符

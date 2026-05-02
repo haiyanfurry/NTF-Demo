@@ -777,15 +777,15 @@ parse_field_stmt:
     mov r13, rax
 
     ; 存储字段名称到 str_pool
-    load_addr rdi, token_buf
-    load_addr rsi, str_pool
+    load_addr rsi, token_buf          ; rsi = 源 = token_buf
+    load_addr rdi, str_pool           ; rdi = 目标 = str_pool
     load_addr rbx, str_pool_pos
-    add rsi, [rbx]
-    mov rdi, rsi
-    load_addr r8, token_buf
+    add rdi, [rbx]                    ; rdi = str_pool + str_pool_pos
+    push rdi                          ; 保存目标指针 (strcpy 会修改 rdi)
     call strcpy_cpuhdr
+    pop rdi                           ; 恢复目标指针
 
-    mov [r12 + FIELD_NAME_OFF], rsi
+    mov [r12 + FIELD_NAME_OFF], rdi
     load_addr rbx, str_pool_pos
     load_addr rdi, token_buf
     call strlen_cpuhdr
@@ -908,16 +908,16 @@ parse_field_stmt:
     push r14
     push r15
 
-    load_addr rdi, token_buf
-    load_addr rsi, str_pool
+    load_addr rsi, token_buf          ; rsi = 源 = token_buf
+    load_addr rdi, str_pool           ; rdi = 目标 = str_pool
     load_addr rbx, str_pool_pos
-    add rsi, [rbx]
-    mov rdi, rsi
-    load_addr r8, token_buf
+    add rdi, [rbx]                    ; rdi = str_pool + str_pool_pos
+    push rdi                          ; 保存目标指针 (strcpy 会修改 rdi)
     call strcpy_cpuhdr
+    pop rdi                           ; 恢复目标指针
 
     ; 写入值条目
-    mov [r14 + VALUE_NAME_OFF], rsi
+    mov [r14 + VALUE_NAME_OFF], rdi
     load_addr rbx, str_pool_pos
     load_addr rdi, token_buf
     call strlen_cpuhdr

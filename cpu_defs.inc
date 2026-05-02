@@ -17,14 +17,15 @@ MAX_FIELDS          equ 16
 MAX_VALUES          equ 16
 
 ; --- 字段表常量 ---
-FIELD_ENTRY_SIZE    equ 24
-FIELD_NAME_OFF      equ 0    ; name_ptr   (8 字节)
-FIELD_BITMASK_OFF   equ 8    ; bitmask    (8 字节)
-FIELD_SHIFT_OFF     equ 16   ; shift      (1 字节)
-FIELD_VALCOUNT_OFF  equ 17   ; val_count  (1 字节)
-FIELD_IS_IMM_OFF    equ 18   ; is_imm     (1 字节)
-FIELD_VALTAB_OFF    equ 19   ; val_table_ptr (8 字节, 调整对齐)
-; 注意: 24 字节对齐
+FIELD_ENTRY_SIZE    equ 32   ; 32 字节对齐
+FIELD_NAME_OFF      equ 0    ; name_ptr     (8 字节)
+FIELD_BITMASK_OFF   equ 8    ; bitmask      (8 字节)
+FIELD_SHIFT_OFF     equ 16   ; shift        (1 字节)
+FIELD_VALCOUNT_OFF  equ 17   ; val_count    (1 字节)
+FIELD_IS_IMM_OFF    equ 18   ; is_imm       (1 字节)
+                             ; padding[5]  (字节 19-23)
+FIELD_VALTAB_OFF    equ 24   ; val_table_ptr (8 字节, 对齐到 8 字节边界)
+; 总大小 = 32 字节
 
 ; --- 值表常量 ---
 VALUE_ENTRY_SIZE    equ 16

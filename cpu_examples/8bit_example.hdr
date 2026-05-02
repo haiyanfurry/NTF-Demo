@@ -26,6 +26,42 @@ endian little
 insn_size variable
 
 ; ============================================
+; 操作数字段定义 (必须在指令之前, 以便解析器在
+; 处理 operands=... 时能找到对应字段)
+; ============================================
+
+; 目的寄存器字段 [3:2]
+字段 dst       bits=3:2
+    ax         value=00
+    bx         value=01
+    cx         value=10b
+    dx         value=11b
+
+; 源操作数字段 [1:0]
+字段 src       bits=1:0
+    ax         value=00
+    bx         value=01
+    imm_1      value=10b
+    imm_5      value=11b
+
+; 跳转目标地址 (第二字节)
+字段 target    bits=7:0  type=immediate
+
+; push 寄存器编码 (第二字节)
+字段 push_reg  bits=7:0
+    ax         value=0x00
+    bx         value=0x01
+    cx         value=0x02
+    dx         value=0x03
+
+; pop 寄存器编码 (第二字节)
+字段 pop_reg   bits=7:0
+    ax         value=0x00
+    bx         value=0x01
+    cx         value=0x02
+    dx         value=0x03
+
+; ============================================
 ; 指令编码表
 ; ============================================
 ; 单字节指令: mask=0xF0, 高4位匹配opcode
@@ -45,38 +81,3 @@ insn_size variable
 指令 jmp       mask=0xFF pattern=0x80  operands=target   size=2
 指令 push      mask=0xFF pattern=0x90  operands=push_reg size=2
 指令 pop       mask=0xFF pattern=0xA0  operands=pop_reg  size=2
-
-; ============================================
-; 操作数字段定义
-; ============================================
-
-; 目的寄存器字段 [3:2]
-字段 dst       bits=3:2
-    ax         value=00
-    bx         value=01
-    cx         value=10
-    dx         value=11
-
-; 源操作数字段 [1:0]
-字段 src       bits=1:0
-    ax         value=00
-    bx         value=01
-    imm_1      value=10
-    imm_5      value=11
-
-; 跳转目标地址 (第二字节)
-字段 target    bits=7:0  type=immediate
-
-; push 寄存器编码 (第二字节)
-字段 push_reg  bits=7:0
-    ax         value=0x00
-    bx         value=0x01
-    cx         value=0x02
-    dx         value=0x03
-
-; pop 寄存器编码 (第二字节)
-字段 pop_reg   bits=7:0
-    ax         value=0x00
-    bx         value=0x01
-    cx         value=0x02
-    dx         value=0x03

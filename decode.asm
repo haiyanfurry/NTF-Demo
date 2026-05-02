@@ -89,6 +89,16 @@ decode_next_instruction:
     push r14
     push r15
 
+    ; DEBUG: iteration marker
+    push rax
+    push rsi
+    push rdi
+    load_addr rsi, debug_iter_msg
+    call write_stderr
+    pop rdi
+    pop rsi
+    pop rax
+
     ; 读取下一个字节
     call read_next_byte
     cmp rax, -1
@@ -142,29 +152,28 @@ decode_next_instruction:
     ; 2. 设置原始字节
     mov [rbx + IR_RAW_OFF], r12b
 
-    ; 3. 设置操作数计数
-    xor rcx, rcx
-    mov cl, [r13 + INSN_OPCOUNT_OFF]
-    mov [rbx + IR_OPCOUNT_OFF], rcx
+    ; 3. 设置操作数计数 (使用 r15 保存, 避免 rcx 被后续操作覆盖)
+    xor r15, r15
+    mov r15b, [r13 + INSN_OPCOUNT_OFF]
+    mov [rbx + IR_OPCOUNT_OFF], r15
 
     ; 4. 解析操作数字段
-    test rcx, rcx
+    test r15, r15
     jz .finish_entry       ; 没有操作数
 
     xor r14, r14           ; 操作数索引
 .op_loop:
     cmp r14, 4             ; 最多4个操作数
     jge .finish_entry
-    cmp r14, rcx
+    cmp r14, r15           ; 使用 r15 中的 op_count (非易失寄存器, 不被 read_next_byte 修改)
     jge .finish_entry
 
-    ; 获取字段索引
-    xor r15, r15
-    mov r15b, [r13 + INSN_OPS_OFF + r14]
+    ; 获取字段索引 (直接使用 al, 避免覆盖 r15)
+    mov al, [r13 + INSN_OPS_OFF + r14]
 
     ; 获取字段条目指针
     load_addr rbx, field_table
-    mov rax, r15
+    movzx rax, al
     imul rax, FIELD_ENTRY_SIZE
     add rbx, rax            ; rbx = 字段条目指针
 
@@ -197,11 +206,65 @@ decode_next_instruction:
     jmp .op_loop
 
 .as_immediate:
-    ; 立即数操作数: 使用原始值
-    ; 简化: 直接存储数值 (后续 codegen 处理)
-    ; 暂时存储为数值指针的特殊标记
-    ; 更简单的处理: 跳过，先放空
+    ; 立即数操作数: 读取下一个字节作为立即数值
+    ; 保存 r14 (操作数索引), format_hex_byte 可能改写
+    push r14
+
+    call read_next_byte
+
+    pop r14
+
+    cmp rax, -1
+    je .eof
+
+    ; DEBUG: output the immediate byte value
+    push rax
+    push rsi
+    push rdi
+    push rcx
+    push rbx
+    load_addr rsi, debug_imm_msg
+    call write_stderr
+    ; output byte as hex - rax is at [rsp + 32] (5 pushes: rax,rsi,rdi,rcx,rbx)
+    mov rax, [rsp + 32]   ; get rax from stack
+    mov r12, rax
+    load_addr rdi, temp_hex_str
+    call format_hex_byte
+    load_addr rsi, temp_hex_str
+    call write_stderr
+    ; newline
+    load_addr rsi, debug_newline_str
+    call write_stderr
+    pop rbx
+    pop rcx
+    pop rdi
+    pop rsi
+    pop rax
+
+    ; 立即数值现在在 rax 中
+    ; 格式化 "0xNN" 字符串到 temp_ir 的内联缓冲区 (每个操作数独立槽位)
+    load_addr rbx, temp_ir
+    lea rdi, [rbx + IR_INLINE_STR_OFF + r14 * 8]
+    mov r12, rax          ; format_hex_byte 使用 r12 作为字节值
+    push r14
+    call format_hex_byte
+    pop r14
+
+    ; 存储操作数指针到 IR 条目 (指向内联缓冲区中该操作数的槽位)
+    load_addr rbx, temp_ir
+    lea rax, [rbx + IR_INLINE_STR_OFF + r14 * 8]
+    mov [rbx + IR_OP1_OFF + r14 * 8], rax
+
+    ; 更新原始字节和指令大小
+    mov [rbx + IR_RAW_OFF + 1], r12b  ; 立即数存入 raw_bytes[1]
+    add byte [rbx + IR_SIZE_OFF], 1   ; 指令大小 +1
+
     inc r14
+
+    ; 恢复 r12 为原始操作码字节
+    ; (format_hex_byte 和 DEBUG 输出过程中 r12 被立即数值覆盖)
+    movzx r12, byte [rbx + IR_RAW_OFF]
+
     jmp .op_loop
 
 .finish_entry:
@@ -274,18 +337,29 @@ write_ir_entry:
     mov rcx, IR_ENTRY_SIZE / 8
     rep movsq
 
-    ; 修正 IR_OP1_OFF 指针: 如果指向 temp_ir 内部, 重定向到 ir_buffer 对应位置
-    ; 加载 temp_ir 地址到 rax
-    load_addr rax, temp_ir
-    mov rbx, [r12 + IR_OP1_OFF]
-    ; 检查 rbx 是否在 [temp_ir, temp_ir+IR_ENTRY_SIZE) 范围内
-    sub rbx, rax
+    ; 修正所有 4 个操作数指针 (IR_OP1_OFF ~ IR_OP4_OFF)
+    ; 如果指向 temp_ir 内部, 重定向到 ir_buffer 对应位置
+    load_addr rax, temp_ir            ; rax = temp_ir 基地址
+    xor r13, r13                      ; r13 = 操作数索引
+.patch_loop:
+    ; 计算当前操作数指针的偏移: IR_OP1_OFF + r13 * 8
+    lea rcx, [r12 + IR_OP1_OFF + r13 * 8]
+    mov rbx, [rcx]                    ; rbx = 当前操作数指针值
+    test rbx, rbx
+    jz .patch_next                    ; 空指针跳过
+    
+    sub rbx, rax                      ; rbx = 指针相对于 temp_ir 的偏移
     cmp rbx, IR_ENTRY_SIZE
-    jae .no_patch
+    jae .patch_next                   ; 不在 temp_ir 范围内, 跳过
+    
     ; 在范围内: 修正为指向 ir_buffer 中的对应位置
     add rbx, r12
-    mov [r12 + IR_OP1_OFF], rbx
-.no_patch:
+    mov [rcx], rbx
+    
+.patch_next:
+    inc r13
+    cmp r13, 4
+    jl .patch_loop
 
     ; 更新计数
     load_addr rbx, ir_entry_count
@@ -393,9 +467,12 @@ str_db:          db "db", 0
 debug_find_result_msg: db "DEBUG: find_insn_by_bits result = ", 0
 debug_find_zero_msg: db "0 (NOT FOUND)", 10, 0
 debug_find_nonzero_msg: db "non-zero (FOUND)", 10, 0
+debug_imm_msg:   db "DEBUG: imm_byte=", 0
+debug_newline_str: db 10, 0
+debug_iter_msg:  db "DEBUG: decode_next_instruction called", 10, 0
 
 ; ============================================
-; BSS: 临时十六进制字符串缓冲区
+; BSS (续)
 ; ============================================
 section .bss
-temp_hex_str     resb 16    ; 用于格式化 "0xNN"
+temp_hex_str    resb 16

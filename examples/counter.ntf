@@ -1,0 +1,7 @@
+; Counter - increments ax from 0 to 5
+_start:
+    inc ax
+    inc ax
+    inc ax
+    inc ax
+    inc ax

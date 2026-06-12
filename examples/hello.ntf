@@ -1,0 +1,5 @@
+; Hello World - 8-bit virtual CPU
+; Outputs "Hi" to console via custom CPU
+_start:
+    nop
+    nop

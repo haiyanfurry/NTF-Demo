@@ -1,7 +1,9 @@
-*.o
-*.exe
-output.asm
+obj/
 bin/
-build/
-nul
-
+*.o
+*.obj
+output.asm
+*.txt
+tmp_hex.txt
+compiler
+compiler.exe

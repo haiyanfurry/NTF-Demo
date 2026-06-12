@@ -137,9 +137,11 @@ _start:
     mov r13, r15              ; r13 = argv 数组指针
 %else
     ; Linux x86_64: 从堆栈获取 argc/argv
-    mov rax, [rbp + 16]       ; argc
+    ; _start 栈布局: [rsp]=argc, [rsp+8]=argv[0], ...
+    ; push rbp 后: [rbp+8]=argc, [rbp+16]=argv[0]
+    mov rax, [rbp + 8]        ; argc
     mov r12, rax
-    lea r13, [rbp + 24]       ; argv 数组指针
+    lea r13, [rbp + 16]       ; argv 数组指针
 %endif
 
     cmp r12, 1

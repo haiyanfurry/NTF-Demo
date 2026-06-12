@@ -23,6 +23,7 @@ default rel
 
 LINE_BUF_SIZE       equ 256
 TOKEN_BUF_SIZE      equ 64
+STR_POOL_SIZE       equ 4096
 
 ; ============================================
 ; 导出符号
@@ -63,6 +64,8 @@ token_buf       resb TOKEN_BUF_SIZE
 token_buf2      resb TOKEN_BUF_SIZE
 token_buf3      resb TOKEN_BUF_SIZE
 char_buf        resb 1
+hdr_pushback    resb 1          ; CR/LF 回退字符
+hdr_has_pb      resq 1          ; 是否有回退字符
 
 ; 头文件句柄/描述符
 hdr_fd          resq 1
@@ -286,39 +289,20 @@ read_hdr_line:
     mov rcx, LINE_BUF_SIZE
     xor rax, rax
     rep stosb
-
     xor r12, r12
+
 .read_loop:
-    ; DEBUG: before sys_read
-    push rdi
-    push rax
-    load_addr rsi, debug_bread_msg
-    call write_stderr
-    pop rax
-    pop rdi
+    ; 检查是否有回退字符 (来自 CR 行尾处理)
+    load_addr rbx, hdr_has_pb
+    cmp qword [rbx], 0
+    jz .do_read
+    ; 使用回退字符，跳过文件读取
+    load_addr rbx, hdr_pushback
+    mov al, [rbx]
+    mov qword [rbx - (hdr_pushback - hdr_has_pb)], 0  ; hdr_has_pb = 0
+    jmp .have_char_loaded
 
-    ; DEBUG: check hdr_fd value
-    push rdi
-    load_addr rbx, hdr_fd
-    mov rdi, [rbx]
-    ; hdr_fd in rdi now - print it as hex
-    ; We'll use a simplified approach - just print "hdr_fd = "
-    push rdi
-    push rsi
-    push rax
-    push rcx
-    load_addr rsi, debug_fd_msg
-    call write_stderr
-    pop rcx
-    pop rax
-    pop rsi
-    pop rdi
-    ; rdi still has hdr_fd value
-    ; Now convert hdr_fd to hex and print
-    ; Actually let's just print a marker with the fd value in decimal
-    ; For safety, skip hex conversion and just store
-    pop rdi
-
+.do_read:
     ; sys_read(rdi=hdr_fd, rsi=char_buf, rdx=1)
     load_addr rbx, hdr_fd
     mov rdi, [rbx]
@@ -326,22 +310,17 @@ read_hdr_line:
     mov rdx, 1
     sys_read
 
-    ; DEBUG: after sys_read
-    push rdi
-    push rax
-    push rsi
-    load_addr rsi, debug_after_read_msg
-    call write_stderr
-    pop rsi
-    pop rax
-    pop rdi
-
     test rax, rax
     jz .eof
     js .eof
 
     load_addr rbx, char_buf
     mov al, [rbx]
+
+.have_char:
+    mov al, [rbx]
+
+.have_char_loaded:
     cmp al, 10
     je .line_end
     cmp al, 13
@@ -369,12 +348,12 @@ read_hdr_line:
     load_addr rbx, hdr_line_buf
     mov byte [rbx + r12], 0
 
-    ; 如果当前行结束字符是 CR (0x0D)，消费后续的 LF (0x0A)
-    ; 避免残留的 \n 被下一次 read_hdr_line 读取导致空行误判为 EOF
+    ; 如果当前行结束字符是 CR (0x0D)，尝试消费后续的 LF (0x0A)
+    ; 如果不是 LF (如旧 Mac 风格)，将该字符保存为回退
     cmp al, 13
     jne .line_end_no_cr
 
-    ; 读取下一个字节 (期望是 \n，对于 Windows \r\n 行尾)
+    ; 读取下一个字节
     push rax
     push rcx
     push rdx
@@ -392,7 +371,22 @@ read_hdr_line:
     pop rdx
     pop rcx
     pop rax
-    ; 忽略结果: 如果是 \n 则已消费，如果是 EOF/错误也无关紧要
+
+    ; 检查读取到的字符
+    test rax, rax
+    jz .line_end_no_cr       ; EOF，无所谓
+    js .line_end_no_cr       ; 错误，忽略
+
+    load_addr rbx, char_buf
+    mov al, [rbx]
+    cmp al, 10               ; 是 LF？
+    je .line_end_no_cr       ; 是 LF，已消费，OK
+
+    ; 不是 LF：保存到回退缓冲区，供下一次 read_hdr_line 使用
+    load_addr rbx, hdr_pushback
+    mov [rbx], al
+    load_addr rbx, hdr_has_pb
+    mov qword [rbx], 1
 
 .line_end_no_cr:
     mov rax, r12
@@ -586,24 +580,12 @@ parse_insn_stmt:
     call get_token_cpuhdr    ; 指令名称
     mov r13, rax
 
-    ; 存储指令名称到 str_pool
-    load_addr rsi, token_buf          ; rsi = 源 = token_buf
-    load_addr rdi, str_pool           ; rdi = 目标 = str_pool
-    load_addr rbx, str_pool_pos
-    add rdi, [rbx]                    ; rdi = str_pool + str_pool_pos
-    call strcpy_cpuhdr
-
-    ; 更新 name_ptr = str_pool + str_pool_pos (复制前的位置)
-    load_addr rbx, str_pool_pos
-    load_addr rax, str_pool
-    add rax, [rbx]
-    mov [r12 + INSN_NAME_OFF], rax
-
-    ; 更新 str_pool_pos
-    load_addr rdi, token_buf
-    call strlen_cpuhdr
-    add [rbx], rax
-    inc qword [rbx]         ; +1 for null terminator
+    ; 存储指令名称到 str_pool (带溢出检查)
+    load_addr rsi, token_buf
+    call strcpy_checked_to_pool
+    test rax, rax
+    jnz .exit               ; 溢出，跳过此指令
+    mov [r12 + INSN_NAME_OFF], rdi
 
     ; 循环解析参数: mask=, pattern=, operands=, size=
 .next_param:
@@ -675,11 +657,13 @@ parse_insn_stmt:
 .parse_oplist:
     load_addr rdi, token_buf2
     call get_token_comma
+    ; rax = get_token_comma 返回更新后的 rsi (指向 hdr_line_buf 中下一个字段名)
+    push rax              ; 保存位置供下次迭代使用
     ; token_buf2 包含字段名
     load_addr rsi, token_buf2
     mov al, [rsi]
     cmp al, 0
-    je .next_param
+    je .oplist_empty      ; 空 token → 结束
 
     ; 在 field_table 中查找字段索引
     push rsi
@@ -694,7 +678,9 @@ parse_insn_stmt:
     cmp rax, -1
     je .skip_op
 
-    ; 字段索引在 al 中 (0-15)
+    ; 字段索引在 al 中 — 验证范围 [0, MAX_FIELDS)
+    cmp al, MAX_FIELDS
+    jae .skip_op         ; 越界字段索引，跳过
     cmp r14, 7
     jge .skip_op
 
@@ -702,8 +688,14 @@ parse_insn_stmt:
     inc r14
 
 .skip_op:
-    ; 检查是否还有更多 (当前 rsi 指向逗号或之后)
+    ; 恢复 rsi 指向 hdr_line_buf 中下一个字段名
+    pop rsi
     jmp .parse_oplist
+
+.oplist_empty:
+    ; token 为空，清理栈
+    add rsp, 8            ; 弹出保存的 rax
+    jmp .next_param
 
 .parse_size:
     ; 解析 size=N
@@ -781,21 +773,12 @@ parse_field_stmt:
     call get_token_cpuhdr
     mov r13, rax
 
-    ; 存储字段名称到 str_pool
-    load_addr rsi, token_buf          ; rsi = 源 = token_buf
-    load_addr rdi, str_pool           ; rdi = 目标 = str_pool
-    load_addr rbx, str_pool_pos
-    add rdi, [rbx]                    ; rdi = str_pool + str_pool_pos
-    push rdi                          ; 保存目标指针 (strcpy 会修改 rdi)
-    call strcpy_cpuhdr
-    pop rdi                           ; 恢复目标指针
-
+    ; 存储字段名称到 str_pool (带溢出检查)
+    load_addr rsi, token_buf
+    call strcpy_checked_to_pool
+    test rax, rax
+    jnz .exit               ; 溢出，跳过此字段
     mov [r12 + FIELD_NAME_OFF], rdi
-    load_addr rbx, str_pool_pos
-    load_addr rdi, token_buf
-    call strlen_cpuhdr
-    add [rbx], rax
-    inc qword [rbx]
 
     ; 循环解析参数
 .next_param:
@@ -907,34 +890,38 @@ parse_field_stmt:
     load_addr rsi, hdr_line_buf
     load_addr rdi, token_buf
     call get_token_cpuhdr
+    ; rax = hdr_line_buf 中 name 之后的位置 (指向 "value=...")
+    push rax              ; 保存此位置供后续 value= 解析使用
 
-    ; 存储名称到 str_pool
+    ; 存储名称到 str_pool (带溢出检查)
     push r12
     push r14
     push r15
 
-    load_addr rsi, token_buf          ; rsi = 源 = token_buf
-    load_addr rdi, str_pool           ; rdi = 目标 = str_pool
-    load_addr rbx, str_pool_pos
-    add rdi, [rbx]                    ; rdi = str_pool + str_pool_pos
-    push rdi                          ; 保存目标指针 (strcpy 会修改 rdi)
-    call strcpy_cpuhdr
-    pop rdi                           ; 恢复目标指针
+    load_addr rsi, token_buf
+    call strcpy_checked_to_pool
+    test rax, rax
+    jnz .val_pool_overflow  ; 溢出，跳过此值条目
 
     ; 写入值条目
     mov [r14 + VALUE_NAME_OFF], rdi
-    load_addr rbx, str_pool_pos
-    load_addr rdi, token_buf
-    call strlen_cpuhdr
-    add [rbx], rax
-    inc qword [rbx]
 
     pop r15
     pop r14
     pop r12
+    jmp .val_continue
 
+.val_pool_overflow:
+    pop r15
+    pop r14
+    pop r12
+    add rsp, 8            ; 弹出保存的 rax (hdr_line_buf 位置)
+    jmp .skip_val
+
+.val_continue:
+    ; 恢复 rsi 指向 hdr_line_buf 中 "value=..." 的位置
+    pop rsi
     ; 读取 value= 部分
-    ; rsi 现在指向 "value=..." 
     load_addr rdi, token_buf2
     call get_token_cpuhdr
 
@@ -1041,6 +1028,60 @@ strlen_cpuhdr:
     inc rax
     jmp .loop
 .done:
+    leave
+    ret
+
+; ============================================
+; strcpy_checked_to_pool: 带溢出检查地复制字符串到 str_pool
+; 输入: rsi = 源字符串
+; 输出: rdi = 目标地址 (str_pool 中), rax = 0(成功) / -1(溢出)
+;        str_pool_pos 仅在成功时更新
+; 破坏: rax, rdi, rbx, rcx
+; ============================================
+strcpy_checked_to_pool:
+    push rbp
+    mov rbp, rsp
+    push rsi
+    push rbx
+    push rcx
+
+    ; 计算源长度
+    mov rdi, rsi
+    call strlen_cpuhdr      ; rax = length
+
+    ; 检查: str_pool_pos + length + 1 > STR_POOL_SIZE ?
+    load_addr rbx, str_pool_pos
+    mov rcx, [rbx]
+    add rcx, rax
+    inc rcx                 ; +1 for null
+    cmp rcx, STR_POOL_SIZE
+    ja .overflow
+
+    ; 有空间 — 执行复制
+    load_addr rdi, str_pool
+    add rdi, [rbx]          ; rdi = str_pool + str_pool_pos
+    push rdi                ; 保存目标地址
+    call strcpy_cpuhdr
+    pop rdi                 ; rdi = 目标地址 (返回值)
+
+    ; 更新 str_pool_pos
+    mov rsi, rdi
+    call strlen_cpuhdr      ; rax = 复制后的字符串长度
+    load_addr rbx, str_pool_pos
+    add [rbx], rax
+    inc qword [rbx]         ; +1 for null
+
+    xor rax, rax            ; 成功
+    jmp .exit
+
+.overflow:
+    xor edi, edi            ; rdi = NULL
+    mov rax, -1             ; 溢出
+
+.exit:
+    pop rcx
+    pop rbx
+    pop rsi
     leave
     ret
 
@@ -1155,15 +1196,13 @@ parse_hex_value:
     xor rax, rax
     xor rbx, rbx
 
-    ; 跳过可选的 0x 前缀
+    ; 跳过可选的 0x / 0X 前缀
     cmp word [rsi], '0x'
-    jne .loop
-    cmp byte [rsi+1], 'x'
-    jne .loop
-    cmp byte [rsi+1], 'X'
-    jne .skip_prefix_check
+    je .skip_prefix
+    cmp word [rsi], '0X'
+    je .skip_prefix
     jmp .loop
-.skip_prefix_check:
+.skip_prefix:
     add rsi, 2
 
 .loop:
@@ -1229,14 +1268,14 @@ parse_bits_range:
 
     ; 解析高位
 .parse_high:
-    mov al, [rsi]
+    movzx eax, byte [rsi]   ; 零扩展，清除 RAX 高 56 位
     cmp al, ':'
     je .got_colon
     cmp al, 0
     je .done
     sub al, '0'
     imul rcx, 10
-    add rcx, rax
+    add rcx, rax            ; rax 高位已清零，安全
     inc rsi
     jmp .parse_high
 
@@ -1245,14 +1284,14 @@ parse_bits_range:
 
     ; 解析低位
 .parse_low:
-    mov al, [rsi]
+    movzx eax, byte [rsi]   ; 零扩展，清除 RAX 高 56 位
     cmp al, 0
     je .done
     cmp al, ' '
     je .done
     sub al, '0'
     imul rbx, 10
-    add rbx, rax
+    add rbx, rax            ; rax 高位已清零，安全
     inc rsi
     jmp .parse_low
 
@@ -1629,3 +1668,4 @@ debug_lookup_val_msg    db "DEBUG: lookup_field_value: value to find = 0x", 0
 debug_valtab_ptr_msg    db "DEBUG: val_table_ptr (hex) = 0x", 0
 debug_valcount_msg      db "DEBUG: val_count = ", 0
 debug_nl_str            db 10, 0
+

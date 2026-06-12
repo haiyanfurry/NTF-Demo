@@ -307,7 +307,6 @@ decode_next_instruction:
 
 .as_immediate:
     ; 立即数操作数: 读取下一个字节作为立即数值
-    ; 保存 r14 (操作数索引), format_hex_byte 可能改写
     push r14
 
     call read_next_byte
@@ -317,53 +316,34 @@ decode_next_instruction:
     cmp rax, -1
     je .eof
 
-    ; DEBUG: output the immediate byte value
-    push rax
-    push rsi
-    push rdi
-    push rcx
-    push rbx
-    load_addr rsi, debug_imm_msg
-    call write_stderr
-    ; output byte as hex - rax is at [rsp + 32] (5 pushes: rax,rsi,rdi,rcx,rbx)
-    mov rax, [rsp + 32]   ; get rax from stack
-    mov r12, rax
-    load_addr rdi, temp_hex_str
-    call format_hex_byte
-    load_addr rsi, temp_hex_str
-    call write_stderr
-    ; newline
-    load_addr rsi, debug_newline_str
-    call write_stderr
-    pop rbx
-    pop rcx
-    pop rdi
-    pop rsi
-    pop rax
+    ; 将立即数值先存入 raw_bytes (使用 IR_SIZE_OFF 作为偏移，支持多立即数)
+    load_addr rbx, temp_ir
+    movzx rcx, byte [rbx + IR_SIZE_OFF]
+    mov [rbx + IR_RAW_OFF + rcx], al
+    add byte [rbx + IR_SIZE_OFF], 1
 
-    ; 立即数值现在在 rax 中
-    ; 格式化 "0xNN" 字符串到 temp_ir 的内联缓冲区 (每个操作数独立槽位)
+    ; 保存立即数值到栈上 (rax 是 caller-saved)
+    push rax              ; [rsp] = 立即数值
+
+    ; 格式化 "0xNN" 到 temp_ir 内联缓冲区
     load_addr rbx, temp_ir
     lea rdi, [rbx + IR_INLINE_STR_OFF + r14 * 8]
-    mov r12, rax          ; format_hex_byte 使用 r12 作为字节值
+    push r12              ; 保存 r12 (原始操作码)
+    mov r12, [rsp + 8]   ; 立即数值 (1 push above = 8 字节偏移)
     push r14
     call format_hex_byte
     pop r14
+    pop r12               ; 恢复 r12 (原始操作码)
 
-    ; 存储操作数指针到 IR 条目 (指向内联缓冲区中该操作数的槽位)
+    ; 弹出立即数值
+    pop rax
+
+    ; 存储操作数指针到 IR 条目
     load_addr rbx, temp_ir
     lea rax, [rbx + IR_INLINE_STR_OFF + r14 * 8]
     mov [rbx + IR_OP1_OFF + r14 * 8], rax
 
-    ; 更新原始字节和指令大小
-    mov [rbx + IR_RAW_OFF + 1], r12b  ; 立即数存入 raw_bytes[1]
-    add byte [rbx + IR_SIZE_OFF], 1   ; 指令大小 +1
-
     inc r14
-
-    ; 恢复 r12 为原始操作码字节
-    ; (format_hex_byte 和 DEBUG 输出过程中 r12 被立即数值覆盖)
-    movzx r12, byte [rbx + IR_RAW_OFF]
 
     jmp .op_loop
 
